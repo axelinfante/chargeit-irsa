@@ -62,6 +62,9 @@ CODIGO_ADMIN = "admin1234"
 page = None  # Referencia global a la página de Flet (se asigna en main)
 _alert_firestore = None  # Diálogo de prueba Firestore (Page no tiene .dialog en esta versión)
 
+# Ruta del fondo (relativa al directorio de ejecución)
+FONDO_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "img", "fondo.jpg")
+
 def main(p: ft.Page):
     global page
     page = p
@@ -148,14 +151,30 @@ def pantalla_layout(contenido):
         )
     )
 
-    page.controls.clear()
-    page.add(
-        ft.Container(
-            content=card,
-            alignment=ft.alignment.Alignment(0, 0),
-            expand=True
-        )
+    # Fondo: imagen a pantalla completa; encima, la tarjeta centrada
+    fondo = ft.Container(
+        content=ft.Image(
+            src=FONDO_IMG,
+            fit=ft.ImageFit.COVER,
+            opacity=0.85,
+        ),
+        expand=True,
+        alignment=ft.alignment.Alignment(0, 0),
     )
+    contenido_stack = ft.Stack(
+        [
+            fondo,
+            ft.Container(
+                content=card,
+                alignment=ft.alignment.Alignment(0, 0),
+                expand=True,
+            ),
+        ],
+        expand=True,
+    )
+
+    page.controls.clear()
+    page.add(contenido_stack)
     page.update()
 
 # ==============================
