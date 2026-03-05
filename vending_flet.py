@@ -7,10 +7,12 @@ import RPi.GPIO as GPIO# ==============================
 # ==============================
 
 RELAY_PINS = [4, 6, 22, 26]  # Cambiar si usás otros pines
-TIEMPO_GIRO = 2               # segundos que gira el espiralGPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)# RELAY ACTIVO EN HIGH
+TIEMPO_GIRO = 2               # segundos que gira el espiral
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
 for pin in RELAY_PINS:
-    GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)  # LOW = apagado# ==============================
+    GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)  # LOW = apagado
 # STOCK
 # ==============================
 
@@ -19,14 +21,22 @@ STOCK = {
     "espiral2": 5,
     "espiral3": 5,
     "espiral4": 5,
-}CODIGOS_VALIDOS = ["abc123", "premio2026", "argentina"]
-CODIGO_ADMIN = "admin1234"# ==============================
-def main(page: ft.Page):page.title = "Vending Argentina"
-page.window_width = 800
-page.window_height = 480
-page.bgcolor = "#EAF6FF"
-page.horizontal_alignment = "center"
-page.vertical_alignment = "center"
+}
+CODIGOS_VALIDOS = ["abc123", "premio2026", "argentina"]
+CODIGO_ADMIN = "admin1234"
+
+page = None  # Referencia global a la página de Flet (se asigna en main)
+
+def main(p: ft.Page):
+    global page
+    page = p
+    page.title = "Vending Argentina"
+    page.window_width = 800
+    page.window_height = 480
+    page.bgcolor = "#EAF6FF"
+    page.horizontal_alignment = "center"
+    page.vertical_alignment = "center"
+    pantalla_principal()
 
 # ==============================
 # ACTIVAR RELAY (ACTIVO EN HIGH)
@@ -156,7 +166,7 @@ def pantalla_principal():
                 weight=ft.FontWeight.BOLD,
                 color="#1F3A93"),
         codigo_input,
-        ft.ElevatedButton(
+        ft.Button(
             "VALIDAR",
             width=200,
             on_click=validar_codigo
@@ -175,19 +185,19 @@ def pantalla_admin():
                 weight=ft.FontWeight.BOLD,
                 color="#1F3A93"),
 
-        ft.ElevatedButton(
+        ft.Button(
             " Probar espirales",
             width=250,
             on_click=lambda e: pantalla_test_espirales()
         ),
 
-        ft.ElevatedButton(
+        ft.Button(
             " Ajustar stock",
             width=250,
             on_click=lambda e: pantalla_stock()
         ),
 
-        ft.ElevatedButton(
+        ft.Button(
             " Configurar WiFi",
             width=250,
             on_click=lambda e: abrir_wifi()
@@ -195,7 +205,7 @@ def pantalla_admin():
 
         ft.Divider(),
 
-        ft.ElevatedButton(
+        ft.Button(
             " Salir de admin",
             width=250,
             on_click=lambda e: pantalla_principal()
@@ -211,7 +221,7 @@ def pantalla_test_espirales():
 
     for i in range(4):
         botones.append(
-            ft.ElevatedButton(
+            ft.Button(
                 f"Espiral {i+1}",
                 width=200,
                 on_click=lambda e, idx=i: dispensar_test(idx)
@@ -225,7 +235,7 @@ def pantalla_test_espirales():
                 color="#1F3A93"),
         *botones,
         ft.Divider(),
-        ft.ElevatedButton(
+        ft.Button(
             " Volver",
             width=200,
             on_click=lambda e: pantalla_admin()
@@ -275,8 +285,8 @@ def pantalla_stock():
                 weight=ft.FontWeight.BOLD,
                 color="#1F3A93"),
         *filas,
-        ft.ElevatedButton(" Guardar cambios", on_click=guardar),
-        ft.ElevatedButton(" Volver", on_click=lambda e: pantalla_admin())
+        ft.Button(" Guardar cambios", on_click=guardar),
+        ft.Button(" Volver", on_click=lambda e: pantalla_admin())
     ])
 
 # ==============================
@@ -285,8 +295,8 @@ def pantalla_stock():
 def abrir_wifi():
     os.system("nm-connection-editor &")
 
-pantalla_principal()# ==============================
+# ==============================
 try:
-    ft.app(target=main)
+    ft.run(main)
 finally:
     GPIO.cleanup()
