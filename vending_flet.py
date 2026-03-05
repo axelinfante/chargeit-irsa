@@ -1,9 +1,15 @@
+import asyncio
 import flet as ft
 import time
-import threading
 import os
 import logging
 from datetime import datetime
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 import RPi.GPIO as GPIO
 
@@ -47,17 +53,14 @@ GPIO.setmode(GPIO.BCM)
 GPIO.setwarnings(False)
 for pin in RELAY_PINS:
     GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)  # LOW = apagado
-# STOCK
+# STOCK (se carga desde Firestore; vacío hasta primera sincronización)
 # ==============================
 
-STOCK = {
-    "espiral1": 5,
-    "espiral2": 5,
-    "espiral3": 5,
-    "espiral4": 5,
-}
-CODIGOS_VALIDOS = ["abc123", "premio2026", "argentina"]
-CODIGO_ADMIN = "admin1234"
+STOCK = {}
+CODIGO_ADMIN = os.getenv("CODIGO_ADMIN", "admin1234")
+
+# Ruta de la imagen de fondo (relativa al directorio de ejecución)
+FONDO_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "img", "fondo.jpg")
 
 page = None  # Referencia global a la página de Flet (se asigna en main)
 _alert_firestore = None  # Diálogo de prueba Firestore (Page no tiene .dialog en esta versión)
@@ -83,16 +86,63 @@ def activar_relay(idx):
     time.sleep(TIEMPO_GIRO)
     GPIO.output(pin, GPIO.LOW)    # DESACTIVAR
 
+# Orden de búsqueda de stock: espiral1, espiral2, espiral3, espiral4
+ESPIRAL_ORDER = ["espiral1", "espiral2", "espiral3", "espiral4"]
+
 # ==============================
-# DISPENSAR AUTOMÁTICO
+# DISPENSAR AUTOMÁTICO (solo local, usado como fallback)
 # ==============================
 def dispensar_automatico():
-    for i, key in enumerate(STOCK):
-        if STOCK[key] > 0:
+    for i, key in enumerate(ESPIRAL_ORDER):
+        if STOCK.get(key, 0) > 0:
             STOCK[key] -= 1
             activar_relay(i)
             return True
     return False
+
+
+# ==============================
+# DISPENSAR POR CÓDIGO (busca stock en espiral1..4, descuenta en Firestore, registra en history)
+# ==============================
+def dispensar_por_codigo(codigo):
+    """
+    Busca stock en espiral1, luego espiral2, espiral3, espiral4.
+    Descuenta en el primero que tenga stock, activa relay, actualiza Firestore y registra en history.
+    Returns: (exito: bool, mensaje_error: str | None)
+    """
+    # Sincronizar stock desde Firestore si hay conexión
+    stock_actual = dict(STOCK)
+    if get_firestore is not None and get_config_stock is not None:
+        try:
+            db = get_firestore()
+            stock_actual = get_config_stock(db)
+            for k, v in stock_actual.items():
+                STOCK[k] = v
+        except Exception as ex:
+            log.warning("No se pudo cargar stock desde Firestore, usando local: %s", ex)
+
+    # Buscar primer espiral con stock (orden espiral1 -> espiral2 -> espiral3 -> espiral4)
+    for i, espiral_id in enumerate(ESPIRAL_ORDER):
+        cantidad = stock_actual.get(espiral_id, 0)
+        if cantidad > 0:
+            # Descontar y activar relay
+            activar_relay(i)
+            nuevo_stock = cantidad - 1
+            STOCK[espiral_id] = nuevo_stock
+
+            # Persistir en Firestore y registrar en history (reutilizando lógica de prueba)
+            if get_firestore is not None and update_config_stock is not None and registrar_evento_history is not None:
+                try:
+                    db = get_firestore()
+                    update_config_stock(db, espiral_id, nuevo_stock)
+                    registrar_evento_history(db, codigo, 1)
+                    log.info("Dispensado por código %s desde %s, stock %s -> %s, evento en history.", codigo, espiral_id, cantidad, nuevo_stock)
+                except Exception as ex:
+                    log.exception("Error al actualizar Firestore/history: %s", ex)
+
+            return True, None
+
+    return False, "Máquina vacía"
 
 # ==============================
 # TEST ESPIRAL (descuenta en config, registra en history, popup)
@@ -148,12 +198,27 @@ def pantalla_layout(contenido):
         )
     )
 
+    # Imagen de fondo a pantalla completa (fit como string por compatibilidad con versiones Flet)
+    fondo = ft.Container(
+        content=ft.Image(
+            src=FONDO_IMG,
+            fit="cover",
+            expand=True,
+        ),
+        expand=True,
+        alignment=ft.alignment.Alignment(0, 0),
+    )
+    contenido_centrado = ft.Container(
+        content=card,
+        alignment=ft.alignment.Alignment(0, 0),
+        expand=True,
+    )
+
     page.controls.clear()
     page.add(
-        ft.Container(
-            content=card,
-            alignment=ft.alignment.Alignment(0, 0),
-            expand=True
+        ft.Stack(
+            controls=[fondo, contenido_centrado],
+            expand=True,
         )
     )
     page.update()
@@ -172,53 +237,41 @@ def pantalla_principal():
     mensaje = ft.Text("", color="red")
 
     def validar_codigo(e):
-
-        codigo = codigo_input.value.lower().strip()
+        codigo = codigo_input.value.strip()
+        if not codigo:
+            mensaje.value = "Ingresá un código"
+            page.update()
+            return
 
         # ADMIN OCULTO
-        if codigo == CODIGO_ADMIN:
+        if codigo.lower() == CODIGO_ADMIN:
             pantalla_admin()
             return
 
-        # CÓDIGOS NORMALES
-        if codigo in CODIGOS_VALIDOS:
+        # TODO: validar código contra endpoint cuando exista; por ahora cualquier código es válido
+        codigo_lower = codigo.lower()
 
-            pantalla_layout([
-                ft.ProgressRing(),
-                ft.Text("Entregando premio...",
-                        size=24,
-                        weight=ft.FontWeight.BOLD,
-                        color="#1F3A93")
-            ])
+        pantalla_layout([
+            ft.ProgressRing(),
+            ft.Text("Entregando premio...",
+                    size=24,
+                    weight=ft.FontWeight.BOLD,
+                    color="#1F3A93")
+        ])
 
-            def proceso():
-
+        async def async_proceso():
+            def bloqueante():
                 time.sleep(1)
+                return dispensar_por_codigo(codigo_lower)
 
-                if dispensar_automatico():
+            exito, error_msg = await asyncio.to_thread(bloqueante)
+            # Desde aquí ya estamos en el hilo principal; las alertas se muestran bien
+            if exito:
+                _mostrar_alert_firestore("¡Listo!", "¡Muchas gracias!", on_ok=pantalla_principal)
+            else:
+                _mostrar_alert_firestore("Máquina vacía", "No hay stock disponible.", on_ok=pantalla_principal)
 
-                    pantalla_layout([
-                        ft.Text(" ¡Muchas gracias!",
-                                size=28,
-                                weight=ft.FontWeight.BOLD,
-                                color="#1F3A93")
-                    ])
-                    time.sleep(4)
-                else:
-                    pantalla_layout([
-                        ft.Text("Sin stock disponible",
-                                size=24,
-                                color="red")
-                    ])
-                    time.sleep(3)
-
-                pantalla_principal()
-
-            threading.Thread(target=proceso).start()
-
-        else:
-            mensaje.value = "Código inválido"
-            page.update()
+        page.run_task(async_proceso)
 
     pantalla_layout([
         ft.Text(" VENDING ARGENTINA",
@@ -389,7 +442,7 @@ def pantalla_stock():
         key = f"espiral{i+1}"
 
         tf = ft.TextField(
-            value=str(STOCK[key]),
+            value=str(STOCK.get(key, 0)),
             width=100,
             text_align=ft.TextAlign.CENTER
         )
