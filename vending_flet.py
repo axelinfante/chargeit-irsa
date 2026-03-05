@@ -1,8 +1,11 @@
 import asyncio
 import flet as ft
-import time
-import os
+import json
 import logging
+import os
+import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 
 try:
@@ -59,6 +62,12 @@ for pin in RELAY_PINS:
 STOCK = {}
 CODIGO_ADMIN = os.getenv("CODIGO_ADMIN", "admin1234")
 
+# API de validación de códigos de canje
+URL_API = (os.getenv("url_api") or "").rstrip("/")
+STORE_ID = os.getenv("storeId", "")
+API_KEY = os.getenv("x-api-key", "")
+VENDING_CODE = os.getenv("vendingCode", "")
+
 # Ruta de la imagen de fondo (relativa al directorio de ejecución)
 FONDO_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "img", "fondo.jpg")
 
@@ -88,6 +97,88 @@ def activar_relay(idx):
 
 # Orden de búsqueda de stock: espiral1, espiral2, espiral3, espiral4
 ESPIRAL_ORDER = ["espiral1", "espiral2", "espiral3", "espiral4"]
+
+# ==============================
+# API VALIDACIÓN DE CÓDIGOS (GET /location/{storeId}/redemption-codes/{code})
+# ==============================
+def validar_codigo_api(codigo):
+    """
+    Valida el código contra la API. Ejecutar en thread (bloqueante).
+    Returns: (valido: bool, mensaje_error: str | None)
+    - (True, None) si el código es válido (200).
+    - (False, "mensaje") si 404, 401 o error de red.
+    """
+    if not URL_API or not STORE_ID or not API_KEY:
+        return False, "API no configurada (revisá url_api, storeId y x-api-key en .env)."
+    url = f"{URL_API}/location/{STORE_ID}/redemption-codes/{codigo.strip()}"
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("x-api-key", API_KEY)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode())
+                log.info("Código válido: benefitId=%s, customerBenefitId=%s", data.get("benefitId"), data.get("customerBenefitId"))
+                return True, None
+            return False, "Respuesta inesperada del servidor."
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            body = e.read().decode() if e.fp else "{}"
+            try:
+                msg = json.loads(body).get("message", "Código inválido o ya usado.")
+            except json.JSONDecodeError:
+                msg = "Código inválido o ya usado."
+            return False, msg
+        if e.code == 401:
+            return False, "Error de autenticación. Revisá la API key en .env."
+        return False, f"Error del servidor ({e.code}). Intentá de nuevo."
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        log.warning("Error de red al validar código: %s", e)
+        return False, "Error de conexión. Intentá de nuevo."
+
+
+# ==============================
+# API REDIMIR CÓDIGO (POST /location/{storeId}/redemption-codes/{code}/redemptions)
+# Solo se usa tras dispensar con éxito en flujo cliente (no en pruebas admin).
+# ==============================
+def redimir_codigo_api(codigo, vending_code):
+    """
+    Marca el código como redimido en la API. Ejecutar en thread (bloqueante).
+    Body: {"vendingCode": "VM-12345"}
+    Returns: (exito: bool, mensaje_error: str | None)
+    - (True, None) si 201 Created.
+    - (False, "mensaje") si 404, 401 o error de red.
+    """
+    if not URL_API or not STORE_ID or not API_KEY:
+        return False, "API no configurada."
+    if not vending_code or not vending_code.strip():
+        return False, "vendingCode no configurado en .env."
+    url = f"{URL_API}/location/{STORE_ID}/redemption-codes/{codigo.strip()}/redemptions"
+    body = json.dumps({"vendingCode": vending_code.strip()}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("x-api-key", API_KEY)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status in (200, 201):
+                data = json.loads(resp.read().decode())
+                log.info("Código redimido: benefitId=%s, customerBenefitId=%s, status=%s", data.get("benefitId"), data.get("customerBenefitId"), data.get("status"))
+                return True, None
+            return False, "Respuesta inesperada del servidor."
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            body_read = e.read().decode() if e.fp else "{}"
+            try:
+                msg = json.loads(body_read).get("message", "Código no encontrado o no puede redimirse.")
+            except json.JSONDecodeError:
+                msg = "Código no encontrado o no puede redimirse."
+            return False, msg
+        if e.code == 401:
+            return False, "Error de autenticación. Revisá la API key en .env."
+        return False, f"Error del servidor ({e.code}). Intentá de nuevo."
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        log.warning("Error de red al redimir código: %s", e)
+        return False, "Error de conexión. Intentá de nuevo."
+
 
 # ==============================
 # DISPENSAR AUTOMÁTICO (solo local, usado como fallback)
@@ -248,25 +339,42 @@ def pantalla_principal():
             pantalla_admin()
             return
 
-        # TODO: validar código contra endpoint cuando exista; por ahora cualquier código es válido
-        codigo_lower = codigo.lower()
+        codigo_lower = codigo.lower().strip()
 
+        # 1) Validar código contra la API
         pantalla_layout([
             ft.ProgressRing(),
-            ft.Text("Entregando premio...",
+            ft.Text("Validando código...",
                     size=24,
                     weight=ft.FontWeight.BOLD,
                     color="#1F3A93")
         ])
 
         async def async_proceso():
+            valido, error_validacion = await asyncio.to_thread(validar_codigo_api, codigo_lower)
+            if not valido:
+                _mostrar_alert_firestore("Código inválido", error_validacion or "Código no válido.", on_ok=pantalla_principal)
+                return
+
+            # 2) Código válido: entregar premio
+            pantalla_layout([
+                ft.ProgressRing(),
+                ft.Text("Entregando premio...",
+                        size=24,
+                        weight=ft.FontWeight.BOLD,
+                        color="#1F3A93")
+            ])
+
             def bloqueante():
                 time.sleep(1)
                 return dispensar_por_codigo(codigo_lower)
 
             exito, error_msg = await asyncio.to_thread(bloqueante)
-            # Desde aquí ya estamos en el hilo principal; las alertas se muestran bien
             if exito:
+                # Redimir código en la API (marcar como utilizado); no aplica en menú admin
+                redimido, _ = await asyncio.to_thread(redimir_codigo_api, codigo_lower, VENDING_CODE)
+                if not redimido:
+                    log.warning("Dispensado OK pero no se pudo redimir el código en la API.")
                 _mostrar_alert_firestore("¡Listo!", "¡Muchas gracias!", on_ok=pantalla_principal)
             else:
                 _mostrar_alert_firestore("Máquina vacía", "No hay stock disponible.", on_ok=pantalla_principal)
