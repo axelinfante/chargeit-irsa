@@ -1,0 +1,8 @@
+# Kivy (ya usado en el proyecto)
+# Instalar según tu entorno: https://kivy.org/doc/stable/gettingstarted/installation.html
+
+# Firebase / Firestore
+firebase-admin>=6.2.0
+
+# Variables de entorno (para FIREBASE_* en .env)
+python-dotenv>=1.0.0

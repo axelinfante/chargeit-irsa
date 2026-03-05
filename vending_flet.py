@@ -2,7 +2,41 @@ import flet as ft
 import time
 import threading
 import os
-import RPi.GPIO as GPIO# ==============================
+import logging
+from datetime import datetime
+
+import RPi.GPIO as GPIO
+
+try:
+    from firestore_config import (
+        get_firestore,
+        get_config_stock,
+        update_config_stock,
+        registrar_evento_history,
+    )
+    _firestore_import_error = None
+except Exception as _firestore_import_error:
+    get_firestore = get_config_stock = update_config_stock = registrar_evento_history = None
+
+# ==============================
+# LOGGING → consola + archivo en /logs/ con timestamp
+# ==============================
+LOGS_DIR = "logs"
+os.makedirs(LOGS_DIR, exist_ok=True)
+_log_filename = os.path.join(LOGS_DIR, f"vending_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log")
+_log_format = "%(asctime)s [%(levelname)s] %(message)s"
+logging.basicConfig(
+    level=logging.INFO,
+    format=_log_format,
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.FileHandler(_log_filename, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+log = logging.getLogger(__name__)
+
+# ==============================
 # CONFIGURACIÓN GPIO
 # ==============================
 
@@ -26,6 +60,7 @@ CODIGOS_VALIDOS = ["abc123", "premio2026", "argentina"]
 CODIGO_ADMIN = "admin1234"
 
 page = None  # Referencia global a la página de Flet (se asigna en main)
+_alert_firestore = None  # Diálogo de prueba Firestore (Page no tiene .dialog en esta versión)
 
 def main(p: ft.Page):
     global page
@@ -60,10 +95,35 @@ def dispensar_automatico():
     return False
 
 # ==============================
-# TEST ESPIRAL (NO RESTA STOCK)
+# TEST ESPIRAL (descuenta en config, registra en history, popup)
 # ==============================
-def dispensar_test(idx):
-    activar_relay(idx)
+def ejecutar_prueba_espiral(idx):
+    """
+    Ejecuta prueba del espiral idx (0-3): activa relay, descuenta stock en Firestore config,
+    registra evento en history con codigo "PRUEBA" y cantidad 1, muestra popup de resultado.
+    """
+    espiral_id = f"espiral{idx + 1}"
+    if get_firestore is None or get_config_stock is None or update_config_stock is None or registrar_evento_history is None:
+        activar_relay(idx)
+        _mostrar_alert_firestore("Prueba", "Prueba terminada (Firestore no disponible, stock no actualizado).")
+        return
+    try:
+        db = get_firestore()
+        stock_actual = get_config_stock(db)
+        cantidad = stock_actual.get(espiral_id, 0)
+        if cantidad <= 0:
+            _mostrar_alert_firestore("Prueba", "No hay stock en este espiral.")
+            return
+        activar_relay(idx)
+        nuevo_stock = cantidad - 1
+        update_config_stock(db, espiral_id, nuevo_stock)
+        registrar_evento_history(db, "PRUEBA", 1)
+        STOCK[espiral_id] = nuevo_stock
+        log.info("Prueba espiral %s: stock %s -> %s, evento PRUEBA registrado.", espiral_id, cantidad, nuevo_stock)
+        _mostrar_alert_firestore("Prueba", "Prueba terminada correctamente.")
+    except Exception as ex:
+        log.exception("Error en prueba espiral %s: %s", espiral_id, ex)
+        _mostrar_alert_firestore("Error", f"Error al probar espiral:\n{ex}")
 
 # ==============================
 # LAYOUT BASE
@@ -177,6 +237,65 @@ def pantalla_principal():
 # ==============================
 # ADMIN
 # ==============================
+def _cerrar_dialogo_firestore(e):
+    """Cierra el diálogo de resultado de prueba Firestore."""
+    global _alert_firestore
+    if _alert_firestore:
+        _alert_firestore.open = False
+        page.update()
+
+
+def _mostrar_alert_firestore(titulo, contenido, on_ok=None):
+    """Muestra un AlertDialog en overlay. on_ok: callback opcional al pulsar OK (ej. pantalla_admin)."""
+    global _alert_firestore
+    if _alert_firestore and _alert_firestore in page.overlay:
+        page.overlay.remove(_alert_firestore)
+
+    def _al_cerrar(e):
+        _cerrar_dialogo_firestore(e)
+        if on_ok:
+            on_ok()
+
+    content = contenido if isinstance(contenido, ft.Control) else ft.Text(str(contenido))
+    _alert_firestore = ft.AlertDialog(
+        title=ft.Text(titulo),
+        content=content,
+        on_dismiss=lambda _: None,
+        actions=[ft.TextButton("OK", on_click=_al_cerrar)],
+    )
+    page.overlay.append(_alert_firestore)
+    _alert_firestore.open = True
+    page.update()
+
+
+def probar_conexion_firestore(e):
+    """Prueba la conexión a Firestore; escribe en consola, en log y muestra diálogo."""
+    log.info("Probando conexión Firestore...")
+    print("Probando conexión Firestore...")
+
+    if get_firestore is None or get_config_stock is None:
+        err = _firestore_import_error
+        if err is None:
+            msg = "Firestore no configurado (revisar firestore_config e .env)."
+        else:
+            msg = f"Error al importar Firestore:\n{err}\n\nSi falta 'firebase_admin', instale en el venv:\npip install firebase-admin"
+        log.warning(msg)
+        print(msg)
+        _mostrar_alert_firestore("Firestore", msg)
+        return
+
+    try:
+        db = get_firestore()
+        get_config_stock(db)
+        log.info("Conexión Firestore OK.")
+        print("Conexión Firestore OK.")
+        _mostrar_alert_firestore("Firestore", "Conexión Firestore OK.")
+    except Exception as ex:
+        log.exception("Conexión Firestore fallido.")
+        print(f"Conexión Firestore fallido: {ex}")
+        _mostrar_alert_firestore("Firestore", "Conexión Firestore fallido.")
+
+
 def pantalla_admin():
 
     pantalla_layout([
@@ -189,6 +308,12 @@ def pantalla_admin():
             " Probar espirales",
             width=250,
             on_click=lambda e: pantalla_test_espirales()
+        ),
+
+        ft.Button(
+            " Probar conexión Firestore",
+            width=250,
+            on_click=probar_conexion_firestore
         ),
 
         ft.Button(
@@ -224,7 +349,7 @@ def pantalla_test_espirales():
             ft.Button(
                 f"Espiral {i+1}",
                 width=200,
-                on_click=lambda e, idx=i: dispensar_test(idx)
+                on_click=lambda e, idx=i: ejecutar_prueba_espiral(idx)
             )
         )
 
@@ -246,6 +371,16 @@ def pantalla_test_espirales():
 # STOCK
 # ==============================
 def pantalla_stock():
+    global STOCK
+    # Cargar stock desde Firestore si hay conexión
+    if get_firestore is not None and get_config_stock is not None:
+        try:
+            db = get_firestore()
+            stock_firestore = get_config_stock(db)
+            STOCK = dict(stock_firestore)
+            log.info("Stock cargado desde Firestore: %s", STOCK)
+        except Exception as ex:
+            log.warning("No se pudo cargar stock desde Firestore, usando valores locales: %s", ex)
 
     inputs = {}
     filas = []
@@ -272,12 +407,25 @@ def pantalla_stock():
         )
 
     def guardar(e):
+        global STOCK
         for key in inputs:
             try:
                 STOCK[key] = int(inputs[key].value)
-            except:
+            except (ValueError, TypeError):
                 pass
-        pantalla_admin()
+        # Persistir en Firestore si hay conexión
+        if get_firestore is not None and update_config_stock is not None:
+            try:
+                db = get_firestore()
+                for key in STOCK:
+                    update_config_stock(db, key, STOCK[key])
+                log.info("Stock guardado en Firestore: %s", STOCK)
+                _mostrar_alert_firestore("Stock", "Stock actualizado.", on_ok=pantalla_admin)
+            except Exception as ex:
+                log.exception("Error al guardar stock en Firestore: %s", ex)
+                _mostrar_alert_firestore("Error", f"No se pudo guardar en Firestore:\n{ex}", on_ok=pantalla_admin)
+        else:
+            _mostrar_alert_firestore("Stock", "Stock actualizado (solo local).", on_ok=pantalla_admin)
 
     pantalla_layout([
         ft.Text("Ajustar Stock",
