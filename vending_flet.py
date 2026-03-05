@@ -7,10 +7,12 @@ import RPi.GPIO as GPIO# ==============================
 # ==============================
 
 RELAY_PINS = [4, 6, 22, 26]  # Cambiar si usás otros pines
-TIEMPO_GIRO = 2               # segundos que gira el espiralGPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)# RELAY ACTIVO EN HIGH
+TIEMPO_GIRO = 2               # segundos que gira el espiral
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
 for pin in RELAY_PINS:
-    GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)  # LOW = apagado# ==============================
+    GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)  # LOW = apagado
 # STOCK
 # ==============================
 
@@ -19,7 +21,8 @@ STOCK = {
     "espiral2": 5,
     "espiral3": 5,
     "espiral4": 5,
-}CODIGOS_VALIDOS = ["abc123", "premio2026", "argentina"]
+}
+CODIGOS_VALIDOS = ["abc123", "premio2026", "argentina"]
 CODIGO_ADMIN = "admin1234"# ==============================
 def main(page: ft.Page):page.title = "Vending Argentina"
 page.window_width = 800
