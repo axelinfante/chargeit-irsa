@@ -297,6 +297,6 @@ def abrir_wifi():
 
 # ==============================
 try:
-    ft.run(target=main)
+    ft.run(main)
 finally:
     GPIO.cleanup()
