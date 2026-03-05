@@ -24,12 +24,14 @@ STOCK = {
 }
 CODIGOS_VALIDOS = ["abc123", "premio2026", "argentina"]
 CODIGO_ADMIN = "admin1234"# ==============================
-def main(page: ft.Page):page.title = "Vending Argentina"
-page.window_width = 800
-page.window_height = 480
-page.bgcolor = "#EAF6FF"
-page.horizontal_alignment = "center"
-page.vertical_alignment = "center"
+def main(page: ft.Page):
+    page.title = "Vending Argentina"
+    page.window_width = 800
+    page.window_height = 480
+    page.bgcolor = "#EAF6FF"
+    page.horizontal_alignment = "center"
+    page.vertical_alignment = "center"
+    pantalla_principal()
 
 # ==============================
 # ACTIVAR RELAY (ACTIVO EN HIGH)
@@ -288,7 +290,7 @@ def pantalla_stock():
 def abrir_wifi():
     os.system("nm-connection-editor &")
 
-pantalla_principal()# ==============================
+# ==============================
 try:
     ft.app(target=main)
 finally:
