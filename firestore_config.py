@@ -31,17 +31,20 @@ EVENT_TIPO_RETIRO = "retiro"
 _db = None
 
 
-def build_retiro_event(codigo, cantidad=1):
+def build_retiro_event(codigo, cantidad=1, vending_code=None):
     """
     Arma el documento para un evento de tipo "retiro" en la colección history.
-    Campos: tipo, codigo, cantidad, fecha.
+    Campos: tipo, codigo, cantidad, fecha y opcionalmente vendingCode (del .env).
     """
-    return {
+    doc = {
         "tipo": EVENT_TIPO_RETIRO,
         "codigo": str(codigo),
         "cantidad": int(cantidad),
         "fecha": firestore.SERVER_TIMESTAMP,
     }
+    if vending_code is not None and str(vending_code).strip():
+        doc["vendingCode"] = str(vending_code).strip()
+    return doc
 
 
 def _get_credentials():
@@ -128,13 +131,14 @@ def add_history_event(db, event_dict):
     db.collection(COLLECTION_HISTORY).add(event_dict)
 
 
-def registrar_evento_history(db, codigo, cantidad=1):
+def registrar_evento_history(db, codigo, cantidad=1, vending_code=None):
     """
     Registra un evento de retiro en la colección history (reutilizable).
     codigo: identificador del evento (ej. "PRUEBA", código de usuario).
     cantidad: siempre 1 en pruebas; en dispensado real puede ser 1.
+    vending_code: valor de vendingCode del .env; se guarda en el documento para traza.
     """
     if db is None:
         db = get_firestore()
-    evento = build_retiro_event(codigo, cantidad)
+    evento = build_retiro_event(codigo, cantidad, vending_code)
     add_history_event(db, evento)
