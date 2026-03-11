@@ -122,14 +122,11 @@ def validar_codigo_api(codigo):
             return False, "Respuesta inesperada del servidor."
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            body = e.read().decode() if e.fp else "{}"
-            try:
-                msg = json.loads(body).get("message", "Código inválido o ya usado.")
-            except json.JSONDecodeError:
-                msg = "Código inválido o ya usado."
-            return False, msg
+            if e.fp:
+                e.read()  # consumir body para evitar warnings
+            return False, "Código inválido o ya usado."
         if e.code == 401:
-            return False, "Error de autenticación. Revisá la API key en .env."
+            return False, "Error de autenticación."
         return False, f"Error del servidor ({e.code}). Intentá de nuevo."
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         log.warning("Error de red al validar código: %s", e)
@@ -161,19 +158,16 @@ def redimir_codigo_api(codigo, vending_code):
         with urllib.request.urlopen(req, timeout=15) as resp:
             if resp.status in (200, 201):
                 data = json.loads(resp.read().decode())
-                log.info("Código redimido: benefitId=%s, customerBenefitId=%s, status=%s", data.get("benefitId"), data.get("customerBenefitId"), data.get("status"))
+                log.info("Código redimido exitosamente: %s", data)
                 return True, None
             return False, "Respuesta inesperada del servidor."
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            body_read = e.read().decode() if e.fp else "{}"
-            try:
-                msg = json.loads(body_read).get("message", "Código no encontrado o no puede redimirse.")
-            except json.JSONDecodeError:
-                msg = "Código no encontrado o no puede redimirse."
-            return False, msg
+            if e.fp:
+                e.read()
+            return False, "Código inválido o no puede redimirse."
         if e.code == 401:
-            return False, "Error de autenticación. Revisá la API key en .env."
+            return False, "Error de autenticación."
         return False, f"Error del servidor ({e.code}). Intentá de nuevo."
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         log.warning("Error de red al redimir código: %s", e)
