@@ -220,7 +220,7 @@ def dispensar_por_codigo(codigo):
                 try:
                     db = get_firestore()
                     update_config_stock(db, espiral_id, nuevo_stock)
-                    registrar_evento_history(db, codigo, 1)
+                    registrar_evento_history(db, codigo, 1, VENDING_CODE)
                     log.info("Dispensado por código %s desde %s, stock %s -> %s, evento en history.", codigo, espiral_id, cantidad, nuevo_stock)
                 except Exception as ex:
                     log.exception("Error al actualizar Firestore/history: %s", ex)
@@ -252,7 +252,7 @@ def ejecutar_prueba_espiral(idx):
         activar_relay(idx)
         nuevo_stock = cantidad - 1
         update_config_stock(db, espiral_id, nuevo_stock)
-        registrar_evento_history(db, "PRUEBA", 1)
+        registrar_evento_history(db, "PRUEBA", 1, VENDING_CODE)
         STOCK[espiral_id] = nuevo_stock
         log.info("Prueba espiral %s: stock %s -> %s, evento PRUEBA registrado.", espiral_id, cantidad, nuevo_stock)
         _mostrar_alert_firestore("Prueba", "Prueba terminada correctamente.")

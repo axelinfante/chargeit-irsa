@@ -190,7 +190,7 @@ def dispensar_por_codigo(codigo):
                     try:
                         db = get_firestore()
                         update_config_stock(db, espiral_id, nuevo_stock)
-                        registrar_evento_history(db, codigo, 1)
+                        registrar_evento_history(db, codigo, 1, VENDING_CODE)
                     except Exception as ex:
                         log.exception("Error Firestore: %s", ex)
                 return True, None
@@ -368,7 +368,7 @@ def ejecutar_prueba_espiral(idx):
         if esperar_deteccion():
             nuevo_stock = cantidad - 1
             update_config_stock(db, espiral_id, nuevo_stock)
-            registrar_evento_history(db, "PRUEBA", 1)
+            registrar_evento_history(db, "PRUEBA", 1, VENDING_CODE)
             STOCK[espiral_id] = nuevo_stock
             _mostrar_alert_firestore("Prueba", "OK - impacto detectado")
         else:
