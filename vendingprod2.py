@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
+import subprocess
 
 try:
     from dotenv import load_dotenv
@@ -531,16 +532,8 @@ def probar_conexion_firestore(e):
         _mostrar_alert_firestore("Firestore", f"Error: {ex}")
 
 def cerrar_para_config_wifi(e):
-    def realmente_cerrar():
-        _mostrar_alert_firestore(
-            "Configuración WiFi",
-            "La aplicación se cerrará ahora.\n\nConfigurá la red desde el escritorio.\nAl finalizar cortar la corriente y volver a conectar para reiniciar la vending.",
-        )
-        time.sleep(3.5)          # tiempo para leer
-        page.window_destroy()    # cierra la ventana Flet
-        os._exit(0)              # fuerza salida del proceso (limpio)
-
-    realmente_cerrar()
+    page.window.minimized = True
+    page.update()
 
 def pantalla_admin():
     pantalla_layout([
