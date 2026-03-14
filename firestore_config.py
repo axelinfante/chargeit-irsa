@@ -7,6 +7,7 @@ Colecciones:
 - history: documentos con (tipo, codigo, cantidad, fecha) para registrar eventos (ej. retiros).
 """
 import os
+from datetime import datetime, date, time, timezone
 
 try:
     from dotenv import load_dotenv
@@ -142,3 +143,42 @@ def registrar_evento_history(db, codigo, cantidad=1, vending_code=None):
         db = get_firestore()
     evento = build_retiro_event(codigo, cantidad, vending_code)
     add_history_event(db, evento)
+
+
+def get_history_by_date_range(db, date_from: date, date_to: date, limit=500):
+    """
+    Obtiene los documentos de la colección history entre date_from y date_to (inclusive).
+    date_from, date_to: objetos date (solo día; se usa 00:00 y 23:59:59 UTC).
+    limit: máximo de documentos a devolver (por defecto 500).
+    Devuelve lista de dict con: id, tipo, codigo, cantidad, fecha (str ISO), vendingCode (opcional).
+    """
+    if db is None:
+        db = get_firestore()
+    start_dt = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
+    end_dt = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
+    coll = db.collection(COLLECTION_HISTORY)
+    query = (
+        coll.where("fecha", ">=", start_dt)
+        .where("fecha", "<=", end_dt)
+        .order_by("fecha", direction=firestore.Query.DESCENDING)
+        .limit(limit)
+    )
+    out = []
+    for doc in query.stream():
+        data = doc.to_dict() or {}
+        ts = data.get("fecha")
+        if ts is None:
+            fecha_str = ""
+        elif hasattr(ts, "isoformat"):
+            fecha_str = ts.isoformat()
+        else:
+            fecha_str = str(ts)
+        out.append({
+            "id": doc.id,
+            "tipo": data.get("tipo", ""),
+            "codigo": data.get("codigo", ""),
+            "cantidad": data.get("cantidad", 0),
+            "fecha": fecha_str,
+            "vendingCode": data.get("vendingCode", ""),
+        })
+    return out

@@ -6,7 +6,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, date
 import subprocess
 
 try:
@@ -27,10 +27,11 @@ try:
         get_config_stock,
         update_config_stock,
         registrar_evento_history,
+        get_history_by_date_range,
     )
     _firestore_import_error = None
 except Exception as _firestore_import_error:
-    get_firestore = get_config_stock = update_config_stock = registrar_evento_history = None
+    get_firestore = get_config_stock = update_config_stock = registrar_evento_history = get_history_by_date_range = None
 
 try:
     from email_notifier import (
@@ -633,6 +634,18 @@ def pantalla_admin():
         ),
         ft.Container(height=12),
         ft.ElevatedButton(
+            "Reporte",
+            width=320,
+            height=40,
+            style=ft.ButtonStyle(
+                bgcolor=ft.Colors.PURPLE_700,
+                color="white",
+                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
+            ),
+            on_click=lambda e: pantalla_reportes()
+        ),
+        ft.Container(height=12),
+        ft.ElevatedButton(
             "Configurar WiFi",
             width=320,
             height=40,
@@ -690,6 +703,170 @@ def pantalla_test_espirales():
             on_click=lambda e: pantalla_admin()
         )
     ])
+
+
+def pantalla_reportes():
+    """Pantalla de reporte: historial (history) con filtros fecha desde / hasta. Por defecto muestra el día actual."""
+    hoy = date.today().isoformat()
+    tf_desde = ft.TextField(
+        label="Desde",
+        value=hoy,
+        width=140,
+        height=50,
+        text_size=16,
+        bgcolor="white",
+        border_radius=6,
+        hint_text="AAAA-MM-DD",
+    )
+    tf_hasta = ft.TextField(
+        label="Hasta",
+        value=hoy,
+        width=140,
+        height=50,
+        text_size=16,
+        bgcolor="white",
+        border_radius=6,
+        hint_text="AAAA-MM-DD",
+    )
+    report_list_ref = ft.Ref[ft.Column]()
+
+    def parse_fecha(s):
+        try:
+            return datetime.strptime(s.strip(), "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return date.today()
+
+    def al_buscar(e):
+        if not get_firestore or not get_history_by_date_range:
+            _mostrar_alert_firestore("Reporte", "Firestore no disponible")
+            return
+        d_from = parse_fecha(tf_desde.value or hoy)
+        d_to = parse_fecha(tf_hasta.value or hoy)
+        if d_from > d_to:
+            _mostrar_alert_firestore("Reporte", "La fecha 'Desde' debe ser menor o igual que 'Hasta'.")
+            return
+        # Mostrar cargando en la lista
+        if report_list_ref.current:
+            report_list_ref.current.controls = [
+                ft.ProgressRing(),
+                ft.Text("Cargando historial...", color="white", size=16),
+            ]
+            report_list_ref.current.update()
+            page.update()
+
+        async def cargar():
+            try:
+                db = get_firestore()
+                registros = await asyncio.to_thread(get_history_by_date_range, db, d_from, d_to)
+            except Exception as ex:
+                log.exception("Error cargando historial: %s", ex)
+                if report_list_ref.current:
+                    report_list_ref.current.controls = [
+                        ft.Text(f"Error: {ex}", color=ft.Colors.RED_300, size=14, no_wrap=False),
+                    ]
+                    report_list_ref.current.update()
+                    page.update()
+                return
+            # Cabecera
+            filas = [
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Text("Fecha", size=14, weight=ft.FontWeight.BOLD, color="white", width=180),
+                            ft.Text("Tipo", size=14, weight=ft.FontWeight.BOLD, color="white", width=80),
+                            ft.Text("Código", size=14, weight=ft.FontWeight.BOLD, color="white", width=120),
+                            ft.Text("Cant.", size=14, weight=ft.FontWeight.BOLD, color="white", width=50),
+                        ],
+                        spacing=8,
+                    ),
+                    bgcolor=ft.Colors.with_opacity(0.3, ft.Colors.WHITE),
+                    padding=6,
+                    border_radius=6,
+                ),
+            ]
+            for r in registros:
+                fecha_short = (r.get("fecha") or "")[:19].replace("T", " ") if r.get("fecha") else ""
+                filas.append(
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Text(fecha_short, size=13, color="white", width=180, no_wrap=True),
+                                ft.Text(r.get("tipo", ""), size=13, color="white", width=80, no_wrap=True),
+                                ft.Text(str(r.get("codigo", "")), size=13, color="white", width=120, no_wrap=True),
+                                ft.Text(str(r.get("cantidad", 0)), size=13, color="white", width=50),
+                            ],
+                            spacing=8,
+                        ),
+                        padding=4,
+                        border_radius=4,
+                        bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.WHITE),
+                    )
+                )
+            if not registros:
+                filas.append(ft.Text("No hay registros en el rango seleccionado.", color=ft.Colors.WHITE70, size=14))
+            if report_list_ref.current:
+                report_list_ref.current.controls = filas
+                report_list_ref.current.update()
+                page.update()
+
+        page.run_task(cargar)
+
+    # Contenedor scrolleable para la lista del reporte
+    lista_reportes = ft.Column(
+        ref=report_list_ref,
+        scroll=ft.ScrollMode.AUTO,
+        expand=True,
+        spacing=4,
+        controls=[
+            ft.Text("Seleccioná fechas y pulsá Buscar.", color="white", size=14),
+        ],
+    )
+    contenedor_lista = ft.Container(
+        content=lista_reportes,
+        height=320,
+        border=ft.border.all(1, ft.Colors.WHITE24),
+        border_radius=8,
+        padding=8,
+        bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.BLACK),
+    )
+
+    pantalla_layout([
+        ft.Text("Reporte - Historial", size=32, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
+        ft.Row(
+            [tf_desde, tf_hasta],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=16,
+        ),
+        ft.ElevatedButton(
+            "Buscar",
+            width=160,
+            height=40,
+            style=ft.ButtonStyle(
+                bgcolor=ft.Colors.PURPLE_600,
+                color="white",
+                text_style=ft.TextStyle(size=18, weight=ft.FontWeight.BOLD),
+            ),
+            on_click=al_buscar,
+        ),
+        ft.Container(height=8),
+        contenedor_lista,
+        ft.Container(height=12),
+        ft.ElevatedButton(
+            "Volver",
+            width=220,
+            height=35,
+            style=ft.ButtonStyle(
+                bgcolor="white",
+                color="#1F3A93",
+                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD),
+            ),
+            on_click=lambda e: pantalla_admin(),
+        ),
+    ])
+    # Cargar por defecto el día actual
+    al_buscar(None)
+
+
 def pantalla_stock():
     global STOCK
     if get_firestore and get_config_stock:
