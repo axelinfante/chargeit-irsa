@@ -32,6 +32,17 @@ try:
 except Exception as _firestore_import_error:
     get_firestore = get_config_stock = update_config_stock = registrar_evento_history = None
 
+try:
+    from email_notifier import (
+        notify_espiral_cero_stock,
+        notify_espirales_sin_stock,
+        notify_vending_sin_stock,
+    )
+    _email_notifier_available = True
+except Exception:
+    notify_espiral_cero_stock = notify_espirales_sin_stock = notify_vending_sin_stock = None
+    _email_notifier_available = False
+
 # ==============================
 # LOGGING
 # ==============================
@@ -212,6 +223,14 @@ def dispensar_por_codigo(codigo):
         except Exception as ex:
             log.warning(f"No se sincronizó stock: {ex}")
 
+    # Notificaciones por correo: espirales en 0
+    if _email_notifier_available and notify_espirales_sin_stock and notify_vending_sin_stock:
+        espirales_en_0 = [e for e in ESPIRAL_ORDER if stock_actual.get(e, 0) <= 0]
+        if len(espirales_en_0) == len(ESPIRAL_ORDER):
+            notify_vending_sin_stock(VENDING_CODE)
+        elif espirales_en_0:
+            notify_espirales_sin_stock(espirales_en_0, VENDING_CODE)
+
     for i, espiral_id in enumerate(ESPIRAL_ORDER):
         cantidad = stock_actual.get(espiral_id, 0)
         if cantidad > 0:
@@ -251,6 +270,8 @@ def ejecutar_prueba_espiral(idx):
         stock = get_config_stock(db)
         cantidad = stock.get(espiral_id, 0)
         if cantidad <= 0:
+            if _email_notifier_available and notify_espiral_cero_stock:
+                notify_espiral_cero_stock(espiral_id, VENDING_CODE)
             _mostrar_alert_firestore("Prueba", "Sin stock en este espiral")
             return
 
@@ -262,6 +283,8 @@ def ejecutar_prueba_espiral(idx):
             update_config_stock(db, espiral_id, nuevo_stock)
             registrar_evento_history(db, "PRUEBA", 1, VENDING_CODE)
             STOCK[espiral_id] = nuevo_stock
+            if nuevo_stock <= 0 and _email_notifier_available and notify_espiral_cero_stock:
+                notify_espiral_cero_stock(espiral_id, VENDING_CODE)
             _mostrar_alert_firestore("Prueba", "OK - impacto detectado")
         else:
             _mostrar_alert_firestore("Prueba", "No se detectó impacto (revisar logs)")
