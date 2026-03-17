@@ -115,6 +115,11 @@ URL_API = (os.getenv("url_api") or "").rstrip("/")
 STORE_ID = os.getenv("storeId", "")
 API_KEY = os.getenv("x-api-key", "")
 VENDING_CODE = os.getenv("vendingCode", "")
+# Límite máximo de unidades que se pueden configurar por espiral desde el panel admin
+try:
+    MAX_STOCK_PER_SPIRAL = int(os.getenv("MAX_STOCK_PER_SPIRAL", "15") or "15")
+except ValueError:
+    MAX_STOCK_PER_SPIRAL = 15
 
 FONDO_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "img", "fondo.jpg")
 
@@ -882,7 +887,7 @@ def pantalla_stock():
         key = f"espiral{i+1}"
 
         tf = ft.TextField(
-            value=str(STOCK.get(key, 0)),
+            value=str(min(STOCK.get(key, 0), MAX_STOCK_PER_SPIRAL)),
             width=80,
             height=50,
             text_align=ft.TextAlign.CENTER,
@@ -899,6 +904,12 @@ def pantalla_stock():
                     v = int(tf.value)
                 except:
                     v = 0
+                if v >= MAX_STOCK_PER_SPIRAL:
+                    _mostrar_alert_firestore(
+                        "Límite de stock",
+                        f"No se puede superar el máximo de {MAX_STOCK_PER_SPIRAL} unidades por espiral.",
+                    )
+                    return
                 tf.value = str(v + 1)
                 tf.update()
             return sumar
@@ -946,11 +957,29 @@ def pantalla_stock():
         filas.append(ft.Container(height=1))
 
     def guardar(e):
+        # Validar que ningún espiral supere el máximo permitido
+        excedidos = []
+        valores_nuevos = {}
         for key, tf in inputs.items():
             try:
-                STOCK[key] = int(tf.value or 0)
+                v = int(tf.value or 0)
             except:
-                pass
+                v = 0
+            if v > MAX_STOCK_PER_SPIRAL:
+                excedidos.append(key)
+            valores_nuevos[key] = max(0, v)
+
+        if excedidos:
+            nombres = ", ".join(excedidos)
+            _mostrar_alert_firestore(
+                "Límite de stock",
+                f"Los siguientes espirales superan el máximo de {MAX_STOCK_PER_SPIRAL} unidades:\n{nombres}\n\nAjustá los valores para poder guardar.",
+            )
+            return
+
+        # Aplicar cambios (todos dentro del límite)
+        for key, v in valores_nuevos.items():
+            STOCK[key] = v
 
         if get_firestore and update_config_stock:
             db = get_firestore()
