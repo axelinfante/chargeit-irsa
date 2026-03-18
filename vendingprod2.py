@@ -38,11 +38,12 @@ try:
         notify_espiral_cero_stock,
         notify_espirales_sin_stock,
         notify_vending_sin_stock,
+        notify_stock_threshold,
     )
     _email_notifier_available = True
     _email_notifier_error = None
 except Exception as _email_notifier_err:
-    notify_espiral_cero_stock = notify_espirales_sin_stock = notify_vending_sin_stock = None
+    notify_espiral_cero_stock = notify_espirales_sin_stock = notify_vending_sin_stock = notify_stock_threshold = None
     _email_notifier_available = False
     _email_notifier_error = _email_notifier_err
 
@@ -115,7 +116,7 @@ URL_API = (os.getenv("url_api") or "").rstrip("/")
 STORE_ID = os.getenv("storeId", "")
 API_KEY = os.getenv("x-api-key", "")
 VENDING_CODE = os.getenv("vendingCode", "")
-# Límite máximo de la SUMA de todos los espirales en el panel admin
+# Umbral de stock total (suma de todos los espirales) para enviar alerta por email
 try:
     MAX_STOCK_PER_SPIRAL = int(os.getenv("MAX_STOCK_PER_SPIRAL", "15") or "15")
 except ValueError:
@@ -219,6 +220,39 @@ def redimir_codigo_api(codigo, vending_code):
         return False, "No se pudo redimir"
 
 # ==============================
+# UTILIDADES DE STOCK
+# ==============================
+def _get_total_stock_actual():
+    """Devuelve la suma del stock actual conocido en memoria para los espirales definidos en ESPIRAL_ORDER."""
+    total = 0
+    for esp in ESPIRAL_ORDER:
+        try:
+            total += int(STOCK.get(esp, 0) or 0)
+        except (ValueError, TypeError):
+            pass
+    return total
+
+
+def _check_stock_threshold_and_notify():
+    """
+    Si el stock total actual coincide con el umbral MAX_STOCK_PER_SPIRAL, envía una notificación por email.
+    Se usa como indicador de que quedan pocas unidades en total.
+    """
+    if not (_email_notifier_available and notify_stock_threshold):
+        return
+    try:
+        total = _get_total_stock_actual()
+    except Exception as ex:
+        log.warning("No se pudo calcular el stock total para enviar alerta de umbral: %s", ex)
+        return
+    if total == MAX_STOCK_PER_SPIRAL:
+        log.info("Stock total llegó al umbral configurado (%s). Enviando notificación por email.", MAX_STOCK_PER_SPIRAL)
+        ok = notify_stock_threshold(total, MAX_STOCK_PER_SPIRAL, VENDING_CODE)
+        if not ok:
+            log.warning("No se pudo enviar el email de umbral de stock (revisar SMTP y NOTIFICATION_EMAILS en .env)")
+
+
+# ==============================
 # DISPENSAR POR CÓDIGO
 # ==============================
 def dispensar_por_codigo(codigo):
@@ -257,6 +291,9 @@ def dispensar_por_codigo(codigo):
                         log.info(f"Dispensado OK - stock {espiral_id}: {cantidad} → {nuevo_stock}")
                     except Exception as ex:
                         log.exception("Error actualizando Firestore/history")
+
+                # Después de dispensar y actualizar el stock, verificar si se alcanzó el umbral total
+                _check_stock_threshold_and_notify()
                 return True, None
             else:
                 log.warning(f"No se detectó caída en {espiral_id} → posible atasco")
@@ -296,11 +333,17 @@ def ejecutar_prueba_espiral(idx):
             update_config_stock(db, espiral_id, nuevo_stock)
             registrar_evento_history(db, "PRUEBA", 1, VENDING_CODE)
             STOCK[espiral_id] = nuevo_stock
+
+            # Si el espiral llegó a 0, se mantiene la alerta específica de espiral sin stock
             if nuevo_stock <= 0 and _email_notifier_available and notify_espiral_cero_stock:
                 log.info("Espiral %s llegó a 0 stock; enviando notificación por email", espiral_id)
                 ok = notify_espiral_cero_stock(espiral_id, VENDING_CODE)
                 if not ok:
                     log.warning("No se pudo enviar el email (revisar SMTP y NOTIFICATION_EMAILS en .env)")
+
+            # Además, verificar si el stock total alcanzó el umbral configurado
+            _check_stock_threshold_and_notify()
+
             _mostrar_alert_firestore("Prueba", "OK - impacto detectado")
         else:
             _mostrar_alert_firestore("Prueba", "No se detectó impacto (revisar logs)")
@@ -867,27 +910,14 @@ def pantalla_stock():
 
         inputs[key] = tf
 
-        def crear_sumar(tf_ref, inputs_ref):
+        def crear_sumar(tf):
             def sumar(e):
                 try:
-                    v = int(tf_ref.value)
+                    v = int(tf.value)
                 except:
                     v = 0
-                total_actual = 0
-                for k, t in inputs_ref.items():
-                    try:
-                        total_actual += int(t.value or 0)
-                    except (ValueError, TypeError):
-                        pass
-                # Si sumamos 1 a este espiral, el total sería total_actual - v + (v+1) = total_actual + 1
-                if total_actual + 1 > MAX_STOCK_PER_SPIRAL:
-                    _mostrar_alert_firestore(
-                        "Límite de stock",
-                        f"La suma total de todos los espirales no puede superar {MAX_STOCK_PER_SPIRAL} unidades.\nSuma actual: {total_actual}. Límite: {MAX_STOCK_PER_SPIRAL}.",
-                    )
-                    return
-                tf_ref.value = str(v + 1)
-                tf_ref.update()
+                tf.value = str(v + 1)
+                tf.update()
             return sumar
 
         def crear_restar(tf):
@@ -933,30 +963,21 @@ def pantalla_stock():
         filas.append(ft.Container(height=1))
 
     def guardar(e):
-        # Validar que la SUMA de todos los espirales no supere el límite
-        valores_nuevos = {}
+        # Tomar los valores ingresados, normalizarlos y guardar sin límite, pero chequeando el umbral para notificación
         for key, tf in inputs.items():
             try:
                 v = int(tf.value or 0)
             except (ValueError, TypeError):
                 v = 0
-            valores_nuevos[key] = max(0, v)
-
-        total = sum(valores_nuevos.values())
-        if total > MAX_STOCK_PER_SPIRAL:
-            _mostrar_alert_firestore(
-                "Límite de stock",
-                f"La suma total de todos los espirales no puede superar {MAX_STOCK_PER_SPIRAL} unidades.\nSuma actual: {total}. Límite: {MAX_STOCK_PER_SPIRAL}.\n\nAjustá los valores para poder guardar.",
-            )
-            return
-
-        for key, v in valores_nuevos.items():
-            STOCK[key] = v
+            STOCK[key] = max(0, v)
 
         if get_firestore and update_config_stock:
             db = get_firestore()
             for k, v in STOCK.items():
                 update_config_stock(db, k, v)
+
+        # Luego de guardar cambios manuales de stock, verificar el umbral total
+        _check_stock_threshold_and_notify()
 
         _mostrar_alert_firestore(
             "Stock",

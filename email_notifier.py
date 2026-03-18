@@ -128,6 +128,21 @@ def build_template_vending_sin_stock(vending_code: str) -> str:
     return _template_base(title, subtitle, body)
 
 
+def build_template_stock_threshold(total: int, threshold: int, vending_code: str) -> str:
+    """Template: el stock total llegó al umbral definido (ej. quedan solo 15 unidades)."""
+    title = "Stock total bajo"
+    subtitle = f"Vending: {vending_code}" if vending_code else "Alerta de stock"
+    body = f"""
+      <p>El stock total de la máquina llegó al umbral configurado.</p>
+      <div class="highlight">
+        Stock total actual: <strong>{total}</strong><br/>
+        Umbral configurado: <strong>{threshold}</strong>
+      </div>
+      <p>Se recomienda <strong>reponer producto</strong> en los espirales para evitar quedarte sin stock.</p>
+    """
+    return _template_base(title, subtitle, body)
+
+
 def notify_espiral_cero_stock(espiral_id: str, vending_code: str = None) -> bool:
     """Notifica que un espiral está en 0 stock (ej. al probar espirales)."""
     vending = vending_code or os.getenv("vendingCode", "")
@@ -150,3 +165,10 @@ def notify_vending_sin_stock(vending_code: str = None) -> bool:
     vending = vending_code or os.getenv("vendingCode", "")
     html = build_template_vending_sin_stock(vending)
     return _send_email("[Vending] Sin stock en ningún espiral", html)
+
+
+def notify_stock_threshold(total: int, threshold: int, vending_code: str = None) -> bool:
+    """Notifica que el stock total alcanzó el umbral configurado (ej. quedan 15 unidades en total)."""
+    vending = vending_code or os.getenv("vendingCode", "")
+    html = build_template_stock_threshold(total, threshold, vending)
+    return _send_email(f"[Vending] Stock total en umbral ({total}/{threshold})", html)
