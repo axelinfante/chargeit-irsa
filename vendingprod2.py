@@ -115,7 +115,7 @@ URL_API = (os.getenv("url_api") or "").rstrip("/")
 STORE_ID = os.getenv("storeId", "")
 API_KEY = os.getenv("x-api-key", "")
 VENDING_CODE = os.getenv("vendingCode", "")
-# Límite máximo de unidades que se pueden configurar por espiral desde el panel admin
+# Límite máximo de la SUMA de todos los espirales en el panel admin
 try:
     MAX_STOCK_PER_SPIRAL = int(os.getenv("MAX_STOCK_PER_SPIRAL", "15") or "15")
 except ValueError:
@@ -887,7 +887,7 @@ def pantalla_stock():
         key = f"espiral{i+1}"
 
         tf = ft.TextField(
-            value=str(min(STOCK.get(key, 0), MAX_STOCK_PER_SPIRAL)),
+            value=str(STOCK.get(key, 0)),
             width=80,
             height=50,
             text_align=ft.TextAlign.CENTER,
@@ -898,20 +898,27 @@ def pantalla_stock():
 
         inputs[key] = tf
 
-        def crear_sumar(tf):
+        def crear_sumar(tf_ref, inputs_ref):
             def sumar(e):
                 try:
-                    v = int(tf.value)
+                    v = int(tf_ref.value)
                 except:
                     v = 0
-                if v >= MAX_STOCK_PER_SPIRAL:
+                total_actual = 0
+                for k, t in inputs_ref.items():
+                    try:
+                        total_actual += int(t.value or 0)
+                    except (ValueError, TypeError):
+                        pass
+                # Si sumamos 1 a este espiral, el total sería total_actual - v + (v+1) = total_actual + 1
+                if total_actual + 1 > MAX_STOCK_PER_SPIRAL:
                     _mostrar_alert_firestore(
                         "Límite de stock",
-                        f"No se puede superar el máximo de {MAX_STOCK_PER_SPIRAL} unidades por espiral.",
+                        f"La suma total de todos los espirales no puede superar {MAX_STOCK_PER_SPIRAL} unidades.\nSuma actual: {total_actual}. Límite: {MAX_STOCK_PER_SPIRAL}.",
                     )
                     return
-                tf.value = str(v + 1)
-                tf.update()
+                tf_ref.value = str(v + 1)
+                tf_ref.update()
             return sumar
 
         def crear_restar(tf):
@@ -946,7 +953,7 @@ def pantalla_stock():
                     bgcolor=ft.Colors.GREEN_400,
                     width=40,
                     height=40,
-                    on_click=crear_sumar(tf)
+                    on_click=crear_sumar(tf, inputs)
                 ),
             ],
             alignment=ft.MainAxisAlignment.CENTER,
@@ -957,27 +964,23 @@ def pantalla_stock():
         filas.append(ft.Container(height=1))
 
     def guardar(e):
-        # Validar que ningún espiral supere el máximo permitido
-        excedidos = []
+        # Validar que la SUMA de todos los espirales no supere el límite
         valores_nuevos = {}
         for key, tf in inputs.items():
             try:
                 v = int(tf.value or 0)
-            except:
+            except (ValueError, TypeError):
                 v = 0
-            if v > MAX_STOCK_PER_SPIRAL:
-                excedidos.append(key)
             valores_nuevos[key] = max(0, v)
 
-        if excedidos:
-            nombres = ", ".join(excedidos)
+        total = sum(valores_nuevos.values())
+        if total > MAX_STOCK_PER_SPIRAL:
             _mostrar_alert_firestore(
                 "Límite de stock",
-                f"Los siguientes espirales superan el máximo de {MAX_STOCK_PER_SPIRAL} unidades:\n{nombres}\n\nAjustá los valores para poder guardar.",
+                f"La suma total de todos los espirales no puede superar {MAX_STOCK_PER_SPIRAL} unidades.\nSuma actual: {total}. Límite: {MAX_STOCK_PER_SPIRAL}.\n\nAjustá los valores para poder guardar.",
             )
             return
 
-        # Aplicar cambios (todos dentro del límite)
         for key, v in valores_nuevos.items():
             STOCK[key] = v
 
