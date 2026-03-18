@@ -586,82 +586,51 @@ def probar_email(e):
     else:
         _mostrar_alert_firestore("Probar email", "No se pudo enviar el email.\nRevisá SMTP_* y NOTIFICATION_EMAILS en .env")
 
+def _btn_admin(text, bgcolor, on_click, width=280, height=46):
+    return ft.ElevatedButton(
+        text,
+        width=width,
+        height=height,
+        style=ft.ButtonStyle(
+            bgcolor=bgcolor,
+            color="white",
+            text_style=ft.TextStyle(size=18, weight=ft.FontWeight.BOLD),
+        ),
+        on_click=on_click,
+    )
+
 def pantalla_admin():
+    col1 = ft.Column(
+        [
+            _btn_admin("Probar espirales", ft.Colors.BLUE_700, lambda e: pantalla_test_espirales()),
+            ft.Container(height=18),
+            _btn_admin("Probar Firestore", ft.Colors.INDIGO_700, probar_conexion_firestore),
+            ft.Container(height=18),
+            _btn_admin("Probar email", ft.Colors.INDIGO_600, probar_email),
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=0,
+    )
+    col2 = ft.Column(
+        [
+            _btn_admin("Ajustar stock", ft.Colors.TEAL_700, lambda e: pantalla_stock()),
+            ft.Container(height=18),
+            _btn_admin("Reporte", ft.Colors.PURPLE_700, lambda e: pantalla_reportes()),
+            ft.Container(height=18),
+            _btn_admin("Configurar WiFi", ft.Colors.ORANGE_700, cerrar_para_config_wifi),
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=0,
+    )
     pantalla_layout([
         ft.Text("ADMINISTRACIÓN", size=36, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-        ft.Container(height=20),
-        ft.ElevatedButton(
-            "Probar espirales",
-            width=320,
-            height=40,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.BLUE_700,
-                color="white",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
-            ),
-            on_click=lambda e: pantalla_test_espirales()
+        ft.Container(height=16),
+        ft.Row(
+            [col1, col2],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=24,
         ),
-        ft.Container(height=12),
-        ft.ElevatedButton(
-            "Probar Firestore",
-            width=320,
-            height=40,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.INDIGO_700,
-                color="white",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
-            ),
-            on_click=probar_conexion_firestore
-        ),
-        ft.Container(height=12),
-        ft.ElevatedButton(
-            "Probar email",
-            width=320,
-            height=40,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.INDIGO_600,
-                color="white",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
-            ),
-            on_click=probar_email
-        ),
-        ft.Container(height=12),
-        ft.ElevatedButton(
-            "Ajustar stock",
-            width=320,
-            height=40,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.TEAL_700,
-                color="white",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
-            ),
-            on_click=lambda e: pantalla_stock()
-        ),
-        ft.Container(height=12),
-        ft.ElevatedButton(
-            "Reporte",
-            width=320,
-            height=40,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.PURPLE_700,
-                color="white",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
-            ),
-            on_click=lambda e: pantalla_reportes()
-        ),
-        ft.Container(height=12),
-        ft.ElevatedButton(
-            "Configurar WiFi",
-            width=320,
-            height=40,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.ORANGE_700,
-                color="white",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
-            ),
-            on_click=cerrar_para_config_wifi
-        ),
-        ft.Container(height=30),
+        ft.Container(height=24),
         ft.ElevatedButton(
             "Volver",
             width=220,
@@ -669,9 +638,9 @@ def pantalla_admin():
             style=ft.ButtonStyle(
                 bgcolor="white",
                 color="#1F3A93",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
+                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD),
             ),
-            on_click=lambda e: pantalla_principal()
+            on_click=lambda e: pantalla_principal(),
         ),
     ])
 
