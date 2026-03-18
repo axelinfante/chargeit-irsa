@@ -586,7 +586,7 @@ def probar_email(e):
     else:
         _mostrar_alert_firestore("Probar email", "No se pudo enviar el email.\nRevisá SMTP_* y NOTIFICATION_EMAILS en .env")
 
-def _btn_admin(text, bgcolor, on_click, width=280, height=38):
+def _btn_admin(text, bgcolor, on_click, width=280, height=46):
     return ft.ElevatedButton(
         text,
         width=width,
@@ -603,9 +603,9 @@ def pantalla_admin():
     col1 = ft.Column(
         [
             _btn_admin("Probar espirales", ft.Colors.BLUE_700, lambda e: pantalla_test_espirales()),
-            ft.Container(height=10),
+            ft.Container(height=18),
             _btn_admin("Probar Firestore", ft.Colors.INDIGO_700, probar_conexion_firestore),
-            ft.Container(height=10),
+            ft.Container(height=18),
             _btn_admin("Probar email", ft.Colors.INDIGO_600, probar_email),
         ],
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -614,9 +614,9 @@ def pantalla_admin():
     col2 = ft.Column(
         [
             _btn_admin("Ajustar stock", ft.Colors.TEAL_700, lambda e: pantalla_stock()),
-            ft.Container(height=10),
+            ft.Container(height=18),
             _btn_admin("Reporte", ft.Colors.PURPLE_700, lambda e: pantalla_reportes()),
-            ft.Container(height=10),
+            ft.Container(height=18),
             _btn_admin("Configurar WiFi", ft.Colors.ORANGE_700, cerrar_para_config_wifi),
         ],
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
