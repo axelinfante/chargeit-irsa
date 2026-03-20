@@ -6,7 +6,9 @@ import os
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, date
+import subprocess
+MODO_PRUEBAS = False     # cambiar a False cuando quieras volver a la API real
 
 try:
     from dotenv import load_dotenv
@@ -26,10 +28,25 @@ try:
         get_config_stock,
         update_config_stock,
         registrar_evento_history,
+        get_history_by_date_range,
     )
     _firestore_import_error = None
 except Exception as _firestore_import_error:
-    get_firestore = get_config_stock = update_config_stock = registrar_evento_history = None
+    get_firestore = get_config_stock = update_config_stock = registrar_evento_history = get_history_by_date_range = None
+
+try:
+    from email_notifier import (
+        notify_espiral_cero_stock,
+        notify_espirales_sin_stock,
+        notify_vending_sin_stock,
+        notify_stock_threshold,
+    )
+    _email_notifier_available = True
+    _email_notifier_error = None
+except Exception as _email_notifier_err:
+    notify_espiral_cero_stock = notify_espirales_sin_stock = notify_vending_sin_stock = notify_stock_threshold = None
+    _email_notifier_available = False
+    _email_notifier_error = _email_notifier_err
 
 # ==============================
 # LOGGING
@@ -100,6 +117,11 @@ URL_API = (os.getenv("url_api") or "").rstrip("/")
 STORE_ID = os.getenv("storeId", "")
 API_KEY = os.getenv("x-api-key", "")
 VENDING_CODE = os.getenv("vendingCode", "")
+# Umbral de stock total (suma de todos los espirales) para enviar alerta por email
+try:
+    MAX_STOCK_PER_SPIRAL = int(os.getenv("MAX_STOCK_PER_SPIRAL", "15") or "15")
+except ValueError:
+    MAX_STOCK_PER_SPIRAL = 15
 
 FONDO_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "img", "fondo.jpg")
 
@@ -163,6 +185,9 @@ def activar_relay(idx):
 # API VALIDACIÓN Y REDENCIÓN
 # ==============================
 def validar_codigo_api(codigo):
+    if MODO_PRUEBAS:
+        log.info(f"[PRUEBAS] Código aceptado sin consultar API: {codigo}")
+        return True, None
     if not URL_API or not STORE_ID or not API_KEY:
         return False, "API no configurada (revisá .env)"
     url = f"{URL_API}/location/{STORE_ID}/redemption-codes/{codigo.strip()}"
@@ -184,6 +209,9 @@ def validar_codigo_api(codigo):
         return False, "Error de conexión"
 
 def redimir_codigo_api(codigo, vending_code):
+    if MODO_PRUEBAS:
+        log.info(f"[PRUEBAS] Redención simulada OK para {codigo}")
+        return True, None
     if not all([URL_API, STORE_ID, API_KEY, vending_code]):
         return False, "Configuración incompleta"
     url = f"{URL_API}/location/{STORE_ID}/redemption-codes/{codigo.strip()}/redemptions"
@@ -199,6 +227,39 @@ def redimir_codigo_api(codigo, vending_code):
         return False, "No se pudo redimir"
 
 # ==============================
+# UTILIDADES DE STOCK
+# ==============================
+def _get_total_stock_actual():
+    """Devuelve la suma del stock actual conocido en memoria para los espirales definidos en ESPIRAL_ORDER."""
+    total = 0
+    for esp in ESPIRAL_ORDER:
+        try:
+            total += int(STOCK.get(esp, 0) or 0)
+        except (ValueError, TypeError):
+            pass
+    return total
+
+
+def _check_stock_threshold_and_notify():
+    """
+    Si el stock total actual coincide con el umbral MAX_STOCK_PER_SPIRAL, envía una notificación por email.
+    Se usa como indicador de que quedan pocas unidades en total.
+    """
+    if not (_email_notifier_available and notify_stock_threshold):
+        return
+    try:
+        total = _get_total_stock_actual()
+    except Exception as ex:
+        log.warning("No se pudo calcular el stock total para enviar alerta de umbral: %s", ex)
+        return
+    if total == MAX_STOCK_PER_SPIRAL:
+        log.info("Stock total llegó al umbral configurado (%s). Enviando notificación por email.", MAX_STOCK_PER_SPIRAL)
+        ok = notify_stock_threshold(total, MAX_STOCK_PER_SPIRAL, VENDING_CODE)
+        if not ok:
+            log.warning("No se pudo enviar el email de umbral de stock (revisar SMTP y NOTIFICATION_EMAILS en .env)")
+
+
+# ==============================
 # DISPENSAR POR CÓDIGO
 # ==============================
 def dispensar_por_codigo(codigo):
@@ -210,6 +271,14 @@ def dispensar_por_codigo(codigo):
             STOCK.update(stock_actual)
         except Exception as ex:
             log.warning(f"No se sincronizó stock: {ex}")
+
+    # Notificaciones por correo: espirales en 0
+    if _email_notifier_available and notify_espirales_sin_stock and notify_vending_sin_stock:
+        espirales_en_0 = [e for e in ESPIRAL_ORDER if stock_actual.get(e, 0) <= 0]
+        if len(espirales_en_0) == len(ESPIRAL_ORDER):
+            notify_vending_sin_stock(VENDING_CODE)
+        elif espirales_en_0:
+            notify_espirales_sin_stock(espirales_en_0, VENDING_CODE)
 
     for i, espiral_id in enumerate(ESPIRAL_ORDER):
         cantidad = stock_actual.get(espiral_id, 0)
@@ -229,6 +298,9 @@ def dispensar_por_codigo(codigo):
                         log.info(f"Dispensado OK - stock {espiral_id}: {cantidad} → {nuevo_stock}")
                     except Exception as ex:
                         log.exception("Error actualizando Firestore/history")
+
+                # Después de dispensar y actualizar el stock, verificar si se alcanzó el umbral total
+                _check_stock_threshold_and_notify()
                 return True, None
             else:
                 log.warning(f"No se detectó caída en {espiral_id} → posible atasco")
@@ -250,6 +322,13 @@ def ejecutar_prueba_espiral(idx):
         stock = get_config_stock(db)
         cantidad = stock.get(espiral_id, 0)
         if cantidad <= 0:
+            if _email_notifier_available and notify_espiral_cero_stock:
+                log.info("Enviando notificación por email: %s sin stock", espiral_id)
+                ok = notify_espiral_cero_stock(espiral_id, VENDING_CODE)
+                if not ok:
+                    log.warning("No se pudo enviar el email (revisar SMTP y NOTIFICATION_EMAILS en .env)")
+            else:
+                log.warning("No se envía email: notificador no disponible o no configurado")
             _mostrar_alert_firestore("Prueba", "Sin stock en este espiral")
             return
 
@@ -261,6 +340,17 @@ def ejecutar_prueba_espiral(idx):
             update_config_stock(db, espiral_id, nuevo_stock)
             registrar_evento_history(db, "PRUEBA", 1, VENDING_CODE)
             STOCK[espiral_id] = nuevo_stock
+
+            # Si el espiral llegó a 0, se mantiene la alerta específica de espiral sin stock
+            if nuevo_stock <= 0 and _email_notifier_available and notify_espiral_cero_stock:
+                log.info("Espiral %s llegó a 0 stock; enviando notificación por email", espiral_id)
+                ok = notify_espiral_cero_stock(espiral_id, VENDING_CODE)
+                if not ok:
+                    log.warning("No se pudo enviar el email (revisar SMTP y NOTIFICATION_EMAILS en .env)")
+
+            # Además, verificar si el stock total alcanzó el umbral configurado
+            _check_stock_threshold_and_notify()
+
             _mostrar_alert_firestore("Prueba", "OK - impacto detectado")
         else:
             _mostrar_alert_firestore("Prueba", "No se detectó impacto (revisar logs)")
@@ -312,24 +402,123 @@ def _cerrar_dialogo_firestore(e):
         _alert_firestore.open = False
         page.update()
 
-def _mostrar_alert_firestore(titulo, contenido, on_ok=None):
+def _mostrar_alert_firestore(
+    tipo: str,
+    mensaje: str,
+    on_ok=None,
+    detalles=None
+):
     global _alert_firestore
+
     if _alert_firestore and _alert_firestore in page.overlay:
         page.overlay.remove(_alert_firestore)
 
+    configuracion = {
+        "exito": {
+            "titulo": "¡Listo!",
+            "color_titulo": ft.Colors.GREEN_700,
+            "bgcolor_card": ft.Colors.GREEN_50,
+            "color_boton": ft.Colors.GREEN_600,
+        },
+        "error": {
+            "titulo": "¡Ups!",
+            "color_titulo": ft.Colors.RED_700,
+            "bgcolor_card": ft.Colors.RED_50,
+            "color_boton": ft.Colors.RED_600,
+        },
+        "info": {
+            "titulo": "Atención",
+            "color_titulo": ft.Colors.BLUE_700,
+            "bgcolor_card": ft.Colors.BLUE_50,
+            "color_boton": ft.Colors.BLUE_600,
+        },
+        "advertencia": {
+            "titulo": "Atención",
+            "color_titulo": ft.Colors.ORANGE_800,
+            "bgcolor_card": ft.Colors.ORANGE_50,
+            "color_boton": ft.Colors.ORANGE_700,
+        }
+    }
+
+    config = configuracion.get(tipo.lower(), configuracion["info"])
+
+    contenido = ft.Column(
+        [
+            ft.Text(
+                config["titulo"],
+                size=32,
+                weight=ft.FontWeight.BOLD,
+                color=config["color_titulo"],
+                text_align=ft.TextAlign.CENTER,
+            ),
+            ft.Container(height=8),
+            ft.Text(
+                mensaje,
+                size=32,
+                color=ft.Colors.BLUE_GREY_800,
+                text_align=ft.TextAlign.CENTER,
+                weight=ft.FontWeight.W_500,
+            ),
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=16,
+    )
+
+    if detalles:
+        contenido.controls.append(
+            ft.Container(height=8),
+            ft.Text(
+                detalles,
+                size=14,
+                color=ft.Colors.BLUE_GREY_600,
+                text_align=ft.TextAlign.CENTER,
+                italic=True,
+            )
+        )
+
+    boton_ok = ft.ElevatedButton(
+        "Entendido",
+        width=240,
+        height=56,
+        style=ft.ButtonStyle(
+            bgcolor=config["color_boton"],
+            color=ft.Colors.WHITE,
+            text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD),
+            shape=ft.RoundedRectangleBorder(radius=16),
+            elevation=4,
+        ),
+        on_click=lambda e: _al_cerrar(e),
+    )
+
     def _al_cerrar(e):
-        _cerrar_dialogo_firestore(e)
+        if _alert_firestore:
+            _alert_firestore.open = False
+            page.update()
         if on_ok:
             on_ok()
 
-    content = contenido if isinstance(contenido, ft.Control) else ft.Text(str(contenido))
-    _alert_firestore = ft.AlertDialog(
-        title=ft.Text(titulo),
-        content=content,
-        actions=[ft.TextButton("OK", on_click=_al_cerrar)],
+    alert = ft.AlertDialog(
+        modal=True,
+        content_padding=ft.padding.symmetric(horizontal=40, vertical=20),
+        shape=ft.RoundedRectangleBorder(radius=28),
+        bgcolor=ft.Colors.WHITE,
+        inset_padding=ft.padding.symmetric(horizontal=40, vertical=60),
+        content=ft.Container(
+            content=contenido,
+            padding=ft.padding.only(top=16, bottom=16, left=24, right=24),
+            bgcolor=config["bgcolor_card"],
+            border_radius=20,
+            width=600,
+            alignment=ft.Alignment(0, 0),
+        ),
+        actions=[boton_ok],
+        actions_alignment=ft.MainAxisAlignment.CENTER,
+        actions_padding=ft.padding.only(bottom=20),
     )
-    page.overlay.append(_alert_firestore)
-    _alert_firestore.open = True
+
+    _alert_firestore = alert
+    page.overlay.append(alert)
+    alert.open = True
     page.update()
 
 # ==============================
@@ -441,12 +630,14 @@ def validar_codigo(e):
     codigo = (codigo_input.value or "").strip()
     if not codigo:
         return
-
+    if codigo.lower() == "espirales1234":
+        pantalla_test_espirales()
+        return
     if codigo.lower() == CODIGO_ADMIN.lower():
         pantalla_admin()
         return
 
-    codigo_lower = codigo.lower().strip()
+    codigo_lower = codigo.strip()
 
     pantalla_layout([
         ft.ProgressRing(),
@@ -461,13 +652,13 @@ def validar_codigo(e):
 
         pantalla_layout([
             ft.ProgressRing(),
-            ft.Text("Entregando premio...", size=24, weight=ft.FontWeight.BOLD, color="#1F3A93")
+            ft.Text("Entregando premio...", size=24, weight=ft.FontWeight.BOLD, color="#FFFFFF")
         ])
 
         exito, msg = await asyncio.to_thread(dispensar_por_codigo, codigo_lower)
         if exito:
             await asyncio.to_thread(redimir_codigo_api, codigo_lower, VENDING_CODE)
-            _mostrar_alert_firestore("¡Listo!", "¡Muchas gracias!", on_ok=pantalla_principal)
+            _mostrar_alert_firestore("¡Listo!", "Premio canjeado con éxito.", on_ok=pantalla_principal)
         else:
             _mostrar_alert_firestore("Error", msg or "No se pudo dispensar", on_ok=pantalla_principal)
 
@@ -521,7 +712,7 @@ def pantalla_principal():
 # ==============================
 def probar_conexion_firestore(e):
     if not get_firestore:
-        _mostrar_alert_firestore("Firestore", "No configurado")
+        _mostrar_alert_firestore("Error", "No configurado")
         return
     try:
         db = get_firestore()
@@ -530,58 +721,66 @@ def probar_conexion_firestore(e):
     except Exception as ex:
         _mostrar_alert_firestore("Firestore", f"Error: {ex}")
 
+def cerrar_para_config_wifi(e):
+    page.window.minimized = True
+    page.update()
+
+def probar_email(e):
+    """Envía un email de prueba (alerta espiral sin stock) y muestra el resultado."""
+    if not _email_notifier_available or not notify_espiral_cero_stock:
+        _mostrar_alert_firestore("Probar email", "Notificador de email no disponible.\nRevisá que email_notifier esté instalado y que no haya fallado al importar.")
+        return
+    log.info("Enviando email de prueba...")
+    ok = notify_espiral_cero_stock("espiral1", VENDING_CODE)
+    if ok:
+        _mostrar_alert_firestore("Probar email", "Email de prueba enviado correctamente.")
+    else:
+        _mostrar_alert_firestore("Probar email", "No se pudo enviar el email.\nRevisá SMTP_* y NOTIFICATION_EMAILS en .env")
+
+def _btn_admin(text, bgcolor, on_click, width=280, height=46):
+    return ft.ElevatedButton(
+        text,
+        width=width,
+        height=height,
+        style=ft.ButtonStyle(
+            bgcolor=bgcolor,
+            color="white",
+            text_style=ft.TextStyle(size=18, weight=ft.FontWeight.BOLD),
+        ),
+        on_click=on_click,
+    )
+
 def pantalla_admin():
+    col1 = ft.Column(
+        [
+            _btn_admin("Probar Firestore", ft.Colors.INDIGO_700, probar_conexion_firestore),
+            ft.Container(height=18),
+            _btn_admin("Probar email", ft.Colors.INDIGO_600, probar_email),
+            ft.Container(height=18),
+            _btn_admin("Ajustar stock", ft.Colors.TEAL_700, lambda e: pantalla_stock()),
+            ft.Container(height=18),
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=0,
+    )
+    col2 = ft.Column(
+        [
+            _btn_admin("Reporte", ft.Colors.PURPLE_700, lambda e: pantalla_reportes()),
+            ft.Container(height=18),
+            _btn_admin("Configurar WiFi", ft.Colors.ORANGE_700, cerrar_para_config_wifi),
+        ],
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=0,
+    )
     pantalla_layout([
         ft.Text("ADMINISTRACIÓN", size=36, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-        ft.Container(height=20),
-        ft.ElevatedButton(
-            "Probar espirales",
-            width=320,
-            height=40,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.BLUE_700,
-                color="white",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
-            ),
-            on_click=lambda e: pantalla_test_espirales()
+        ft.Container(height=16),
+        ft.Row(
+            [col1, col2],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=24,
         ),
-        ft.Container(height=12),
-        ft.ElevatedButton(
-            "Probar Firestore",
-            width=320,
-            height=40,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.INDIGO_700,
-                color="white",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
-            ),
-            on_click=probar_conexion_firestore
-        ),
-        ft.Container(height=12),
-        ft.ElevatedButton(
-            "Ajustar stock",
-            width=320,
-            height=40,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.TEAL_700,
-                color="white",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
-            ),
-            on_click=lambda e: pantalla_stock()
-        ),
-        ft.Container(height=12),
-        ft.ElevatedButton(
-            "Configurar WiFi",
-            width=320,
-            height=40,
-            style=ft.ButtonStyle(
-                bgcolor=ft.Colors.ORANGE_700,
-                color="white",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
-            ),
-            on_click=lambda e: os.system("nm-connection-editor &")
-        ),
-        ft.Container(height=30),
+        ft.Container(height=24),
         ft.ElevatedButton(
             "Volver",
             width=220,
@@ -589,9 +788,9 @@ def pantalla_admin():
             style=ft.ButtonStyle(
                 bgcolor="white",
                 color="#1F3A93",
-                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD)
+                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD),
             ),
-            on_click=lambda e: pantalla_principal()
+            on_click=lambda e: pantalla_principal(),
         ),
     ])
 
@@ -628,6 +827,170 @@ def pantalla_test_espirales():
             on_click=lambda e: pantalla_admin()
         )
     ])
+
+
+def pantalla_reportes():
+    """Pantalla de reporte: historial (history) con filtros fecha desde / hasta. Por defecto muestra el día actual."""
+    hoy = date.today().isoformat()
+    tf_desde = ft.TextField(
+        label="Desde",
+        value=hoy,
+        width=140,
+        height=50,
+        text_size=16,
+        bgcolor="white",
+        border_radius=6,
+        hint_text="AAAA-MM-DD",
+    )
+    tf_hasta = ft.TextField(
+        label="Hasta",
+        value=hoy,
+        width=140,
+        height=50,
+        text_size=16,
+        bgcolor="white",
+        border_radius=6,
+        hint_text="AAAA-MM-DD",
+    )
+    report_list_ref = ft.Ref[ft.Column]()
+
+    def parse_fecha(s):
+        try:
+            return datetime.strptime(s.strip(), "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return date.today()
+
+    def al_buscar(e):
+        if not get_firestore or not get_history_by_date_range:
+            _mostrar_alert_firestore("Reporte", "Firestore no disponible")
+            return
+        d_from = parse_fecha(tf_desde.value or hoy)
+        d_to = parse_fecha(tf_hasta.value or hoy)
+        if d_from > d_to:
+            _mostrar_alert_firestore("Reporte", "La fecha 'Desde' debe ser menor o igual que 'Hasta'.")
+            return
+        # Mostrar cargando en la lista
+        if report_list_ref.current:
+            report_list_ref.current.controls = [
+                ft.ProgressRing(),
+                ft.Text("Cargando historial...", color="white", size=16),
+            ]
+            report_list_ref.current.update()
+            page.update()
+
+        async def cargar():
+            try:
+                db = get_firestore()
+                registros = await asyncio.to_thread(get_history_by_date_range, db, d_from, d_to)
+            except Exception as ex:
+                log.exception("Error cargando historial: %s", ex)
+                if report_list_ref.current:
+                    report_list_ref.current.controls = [
+                        ft.Text(f"Error: {ex}", color=ft.Colors.RED_300, size=14, no_wrap=False),
+                    ]
+                    report_list_ref.current.update()
+                    page.update()
+                return
+            # Cabecera
+            filas = [
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Text("Fecha", size=14, weight=ft.FontWeight.BOLD, color="white", width=180),
+                            ft.Text("Tipo", size=14, weight=ft.FontWeight.BOLD, color="white", width=80),
+                            ft.Text("Código", size=14, weight=ft.FontWeight.BOLD, color="white", width=120),
+                            ft.Text("Cant.", size=14, weight=ft.FontWeight.BOLD, color="white", width=50),
+                        ],
+                        spacing=8,
+                    ),
+                    bgcolor=ft.Colors.with_opacity(0.3, ft.Colors.WHITE),
+                    padding=6,
+                    border_radius=6,
+                ),
+            ]
+            for r in registros:
+                fecha_short = (r.get("fecha") or "")[:19].replace("T", " ") if r.get("fecha") else ""
+                filas.append(
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Text(fecha_short, size=13, color="white", width=180, no_wrap=True),
+                                ft.Text(r.get("tipo", ""), size=13, color="white", width=80, no_wrap=True),
+                                ft.Text(str(r.get("codigo", "")), size=13, color="white", width=120, no_wrap=True),
+                                ft.Text(str(r.get("cantidad", 0)), size=13, color="white", width=50),
+                            ],
+                            spacing=8,
+                        ),
+                        padding=4,
+                        border_radius=4,
+                        bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.WHITE),
+                    )
+                )
+            if not registros:
+                filas.append(ft.Text("No hay registros en el rango seleccionado.", color=ft.Colors.WHITE70, size=14))
+            if report_list_ref.current:
+                report_list_ref.current.controls = filas
+                report_list_ref.current.update()
+                page.update()
+
+        page.run_task(cargar)
+
+    # Contenedor scrolleable para la lista del reporte
+    lista_reportes = ft.Column(
+        ref=report_list_ref,
+        scroll=ft.ScrollMode.AUTO,
+        expand=True,
+        spacing=4,
+        controls=[
+            ft.Text("Seleccioná fechas y pulsá Buscar.", color="white", size=14),
+        ],
+    )
+    contenedor_lista = ft.Container(
+        content=lista_reportes,
+        height=320,
+        border=ft.border.all(1, ft.Colors.WHITE24),
+        border_radius=8,
+        padding=8,
+        bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.BLACK),
+    )
+
+    pantalla_layout([
+        ft.Text("Reporte - Historial", size=32, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
+        ft.Row(
+            [tf_desde, tf_hasta],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=16,
+        ),
+        ft.ElevatedButton(
+            "Buscar",
+            width=160,
+            height=40,
+            style=ft.ButtonStyle(
+                bgcolor=ft.Colors.PURPLE_600,
+                color="white",
+                text_style=ft.TextStyle(size=18, weight=ft.FontWeight.BOLD),
+            ),
+            on_click=al_buscar,
+        ),
+        ft.Container(height=8),
+        contenedor_lista,
+        ft.Container(height=12),
+        ft.ElevatedButton(
+            "Volver",
+            width=220,
+            height=35,
+            style=ft.ButtonStyle(
+                bgcolor="white",
+                color="#1F3A93",
+                text_style=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD),
+            ),
+            on_click=lambda e: pantalla_admin(),
+        ),
+    ])
+    # Cargar por defecto el día actual
+    al_buscar(None)
+
+
 def pantalla_stock():
     global STOCK
     if get_firestore and get_config_stock:
@@ -654,6 +1017,7 @@ def pantalla_stock():
 
         inputs[key] = tf
 
+# Definir la fábrica correctamente (solo recibe tf)
         def crear_sumar(tf):
             def sumar(e):
                 try:
@@ -707,16 +1071,21 @@ def pantalla_stock():
         filas.append(ft.Container(height=1))
 
     def guardar(e):
+        # Tomar los valores ingresados, normalizarlos y guardar sin límite, pero chequeando el umbral para notificación
         for key, tf in inputs.items():
             try:
-                STOCK[key] = int(tf.value or 0)
-            except:
-                pass
+                v = int(tf.value or 0)
+            except (ValueError, TypeError):
+                v = 0
+            STOCK[key] = max(0, v)
 
         if get_firestore and update_config_stock:
             db = get_firestore()
             for k, v in STOCK.items():
                 update_config_stock(db, k, v)
+
+        # Luego de guardar cambios manuales de stock, verificar el umbral total
+        _check_stock_threshold_and_notify()
 
         _mostrar_alert_firestore(
             "Stock",
