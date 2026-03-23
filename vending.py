@@ -27,11 +27,12 @@ try:
         get_firestore,
         get_config_stock,
         update_config_stock,
+        ensure_vending_config,
         registrar_evento_history,
     )
     _firestore_import_error = None
 except Exception as _firestore_import_error:
-    get_firestore = get_config_stock = update_config_stock = registrar_evento_history = None
+    get_firestore = get_config_stock = update_config_stock = ensure_vending_config = registrar_evento_history = None
 
 # ==============================
 # LOGGING
@@ -173,7 +174,7 @@ def dispensar_por_codigo(codigo):
     if get_firestore and get_config_stock:
         try:
             db = get_firestore()
-            stock_actual = get_config_stock(db)
+            stock_actual = get_config_stock(db, VENDING_CODE)
             STOCK.update(stock_actual)
         except Exception as ex:
             log.warning("No se pudo sincronizar stock: %s", ex)
@@ -189,7 +190,7 @@ def dispensar_por_codigo(codigo):
                 if get_firestore and update_config_stock and registrar_evento_history:
                     try:
                         db = get_firestore()
-                        update_config_stock(db, espiral_id, nuevo_stock)
+                        update_config_stock(db, espiral_id, nuevo_stock, VENDING_CODE)
                         registrar_evento_history(db, codigo, 1, VENDING_CODE)
                     except Exception as ex:
                         log.exception("Error Firestore: %s", ex)
@@ -345,7 +346,7 @@ def probar_conexion_firestore(e):
         return
     try:
         db = get_firestore()
-        get_config_stock(db)
+        get_config_stock(db, VENDING_CODE)
         _mostrar_alert_firestore("Firestore", "Conexión OK")
     except Exception as ex:
         _mostrar_alert_firestore("Firestore", f"Error: {str(ex)}")
@@ -358,7 +359,7 @@ def ejecutar_prueba_espiral(idx):
         return
     try:
         db = get_firestore()
-        stock = get_config_stock(db)
+        stock = get_config_stock(db, VENDING_CODE)
         cantidad = stock.get(espiral_id, 0)
         if cantidad <= 0:
             _mostrar_alert_firestore("Prueba", "Sin stock")
@@ -367,7 +368,7 @@ def ejecutar_prueba_espiral(idx):
         log.info(f"Prueba espiral {espiral_id}: esperando impacto...")
         if esperar_deteccion():
             nuevo_stock = cantidad - 1
-            update_config_stock(db, espiral_id, nuevo_stock)
+            update_config_stock(db, espiral_id, nuevo_stock, VENDING_CODE)
             registrar_evento_history(db, "PRUEBA", 1, VENDING_CODE)
             STOCK[espiral_id] = nuevo_stock
             _mostrar_alert_firestore("Prueba", "OK - impacto detectado")
@@ -389,7 +390,7 @@ def pantalla_stock():
     global STOCK
     if get_firestore and get_config_stock:
         try:
-            STOCK = get_config_stock(get_firestore())
+            STOCK = get_config_stock(get_firestore(), VENDING_CODE)
         except:
             pass
 
@@ -410,7 +411,7 @@ def pantalla_stock():
         if get_firestore and update_config_stock:
             db = get_firestore()
             for k, v in STOCK.items():
-                update_config_stock(db, k, v)
+                update_config_stock(db, k, v, VENDING_CODE)
         _mostrar_alert_firestore("Stock", "Guardado", on_ok=pantalla_admin)
 
     pantalla_layout([
@@ -463,6 +464,14 @@ def main(p: ft.Page):
     except Exception as ex:
         log.error("FALLO al inicializar ADXL345 en main():", exc_info=True)
         accel = None
+
+    if get_firestore and ensure_vending_config:
+        try:
+            db = get_firestore()
+            ensure_vending_config(db, VENDING_CODE)
+            STOCK.update(get_config_stock(db, VENDING_CODE))
+        except Exception as ex:
+            log.warning("No se pudo verificar/crear config inicial para vendingCode=%s: %s", VENDING_CODE, ex)
 
     pantalla_principal()
 

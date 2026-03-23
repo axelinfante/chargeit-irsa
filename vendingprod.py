@@ -27,12 +27,13 @@ try:
         get_firestore,
         get_config_stock,
         update_config_stock,
+        ensure_vending_config,
         registrar_evento_history,
         get_history_by_date_range,
     )
     _firestore_import_error = None
 except Exception as _firestore_import_error:
-    get_firestore = get_config_stock = update_config_stock = registrar_evento_history = get_history_by_date_range = None
+    get_firestore = get_config_stock = update_config_stock = ensure_vending_config = registrar_evento_history = get_history_by_date_range = None
 
 try:
     from email_notifier import (
@@ -267,7 +268,7 @@ def dispensar_por_codigo(codigo):
     if get_firestore and get_config_stock:
         try:
             db = get_firestore()
-            stock_actual = get_config_stock(db)
+            stock_actual = get_config_stock(db, VENDING_CODE)
             STOCK.update(stock_actual)
         except Exception as ex:
             log.warning(f"No se sincronizó stock: {ex}")
@@ -293,7 +294,7 @@ def dispensar_por_codigo(codigo):
                 if get_firestore and update_config_stock and registrar_evento_history:
                     try:
                         db = get_firestore()
-                        update_config_stock(db, espiral_id, nuevo_stock)
+                        update_config_stock(db, espiral_id, nuevo_stock, VENDING_CODE)
                         registrar_evento_history(db, codigo, 1, VENDING_CODE)
                         log.info(f"Dispensado OK - stock {espiral_id}: {cantidad} → {nuevo_stock}")
                     except Exception as ex:
@@ -319,7 +320,7 @@ def ejecutar_prueba_espiral(idx):
 
     try:
         db = get_firestore()
-        stock = get_config_stock(db)
+        stock = get_config_stock(db, VENDING_CODE)
         cantidad = stock.get(espiral_id, 0)
         if cantidad <= 0:
             if _email_notifier_available and notify_espiral_cero_stock:
@@ -337,7 +338,7 @@ def ejecutar_prueba_espiral(idx):
 
         if esperar_deteccion():
             nuevo_stock = cantidad - 1
-            update_config_stock(db, espiral_id, nuevo_stock)
+            update_config_stock(db, espiral_id, nuevo_stock, VENDING_CODE)
             registrar_evento_history(db, "PRUEBA", 1, VENDING_CODE)
             STOCK[espiral_id] = nuevo_stock
 
@@ -716,7 +717,7 @@ def probar_conexion_firestore(e):
         return
     try:
         db = get_firestore()
-        get_config_stock(db)
+        get_config_stock(db, VENDING_CODE)
         _mostrar_alert_firestore("Firestore", "Conexión OK")
     except Exception as ex:
         _mostrar_alert_firestore("Firestore", f"Error: {ex}")
@@ -881,7 +882,7 @@ def pantalla_reportes():
         async def cargar():
             try:
                 db = get_firestore()
-                registros = await asyncio.to_thread(get_history_by_date_range, db, d_from, d_to)
+                registros = await asyncio.to_thread(get_history_by_date_range, db, d_from, d_to, 500, VENDING_CODE)
             except Exception as ex:
                 log.exception("Error cargando historial: %s", ex)
                 if report_list_ref.current:
@@ -995,7 +996,7 @@ def pantalla_stock():
     global STOCK
     if get_firestore and get_config_stock:
         try:
-            STOCK = get_config_stock(get_firestore())
+            STOCK = get_config_stock(get_firestore(), VENDING_CODE)
         except:
             pass
 
@@ -1082,7 +1083,7 @@ def pantalla_stock():
         if get_firestore and update_config_stock:
             db = get_firestore()
             for k, v in STOCK.items():
-                update_config_stock(db, k, v)
+                update_config_stock(db, k, v, VENDING_CODE)
 
         # Luego de guardar cambios manuales de stock, verificar el umbral total
         _check_stock_threshold_and_notify()
@@ -1164,6 +1165,18 @@ def main(p: ft.Page):
     except Exception as ex:
         log.error("Fallo ADXL345", exc_info=True)
         accel = None
+
+    if get_firestore and ensure_vending_config:
+        try:
+            db = get_firestore()
+            created = ensure_vending_config(db, VENDING_CODE)
+            STOCK.update(get_config_stock(db, VENDING_CODE))
+            if created:
+                log.info("Se creó configuración inicial en Firestore para vendingCode=%s", VENDING_CODE)
+            else:
+                log.info("Configuración Firestore ya existe para vendingCode=%s", VENDING_CODE)
+        except Exception as ex:
+            log.warning("No se pudo verificar/crear config inicial para vendingCode=%s: %s", VENDING_CODE, ex)
 
     pantalla_principal()
 

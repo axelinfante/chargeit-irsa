@@ -3,7 +3,7 @@ Configuración de Firestore usando variables de entorno.
 Variables requeridas: FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY.
 
 Colecciones:
-- config: documentos espiral1, espiral2, espiral3, espiral4; cada uno con campo "stock" (número).
+- config/{vendingCode}/espirales/{espiralN}: cada doc con campo "stock" (número).
 - history: documentos con (tipo, codigo, cantidad, fecha) para registrar eventos (ej. retiros).
 """
 import os
@@ -21,6 +21,7 @@ from firebase_admin import credentials, firestore
 # Colecciones
 COLLECTION_CONFIG = "config"
 COLLECTION_HISTORY = "history"
+SUBCOLLECTION_ESPIRALES = "espirales"
 
 # Config: IDs de los 4 documentos (espirales) y nombre del campo de stock
 ESPIRAL_IDS = ["espiral1", "espiral2", "espiral3", "espiral4"]
@@ -91,14 +92,40 @@ def get_firestore():
 # --- Helpers para colección "config" (stock por espiral) ---
 
 
-def get_config_stock(db=None):
+def _get_vending_doc_ref(db, vending_code: str):
+    vending_code = str(vending_code or os.getenv("vendingCode", "")).strip()
+    if not vending_code:
+        raise ValueError("vending_code es obligatorio para leer/escribir config")
+    return db.collection(COLLECTION_CONFIG).document(vending_code)
+
+
+def ensure_vending_config(db=None, vending_code=None):
     """
-    Lee el stock de los 4 espirales desde config.
+    Garantiza que exista config/{vendingCode}/espirales/{espiral1..4} con stock por defecto 0.
+    Devuelve True si creó al menos un documento, False si ya existían todos.
+    """
+    if db is None:
+        db = get_firestore()
+    vending_ref = _get_vending_doc_ref(db, vending_code)
+    created_any = False
+    for eid in ESPIRAL_IDS:
+        doc_ref = vending_ref.collection(SUBCOLLECTION_ESPIRALES).document(eid)
+        snap = doc_ref.get()
+        if not snap.exists:
+            doc_ref.set({FIELD_STOCK: 0}, merge=True)
+            created_any = True
+    return created_any
+
+
+def get_config_stock(db=None, vending_code=None):
+    """
+    Lee el stock de los 4 espirales desde config/{vendingCode}/espirales.
     Devuelve dict { "espiral1": n, "espiral2": n, ... }; si falta un doc, usa 0.
     """
     if db is None:
         db = get_firestore()
-    coll = db.collection(COLLECTION_CONFIG)
+    ensure_vending_config(db, vending_code)
+    coll = _get_vending_doc_ref(db, vending_code).collection(SUBCOLLECTION_ESPIRALES)
     out = {}
     for eid in ESPIRAL_IDS:
         doc = coll.document(eid).get()
@@ -110,11 +137,12 @@ def get_config_stock(db=None):
     return out
 
 
-def update_config_stock(db, espiral_id, new_stock):
-    """Actualiza el campo stock del documento espiral_id en config."""
+def update_config_stock(db, espiral_id, new_stock, vending_code=None):
+    """Actualiza el campo stock del documento espiral_id en config/{vendingCode}/espirales."""
     if db is None:
         db = get_firestore()
-    db.collection(COLLECTION_CONFIG).document(espiral_id).set(
+    ensure_vending_config(db, vending_code)
+    _get_vending_doc_ref(db, vending_code).collection(SUBCOLLECTION_ESPIRALES).document(espiral_id).set(
         {FIELD_STOCK: int(new_stock)}, merge=True
     )
 
@@ -145,7 +173,7 @@ def registrar_evento_history(db, codigo, cantidad=1, vending_code=None):
     add_history_event(db, evento)
 
 
-def get_history_by_date_range(db, date_from: date, date_to: date, limit=500):
+def get_history_by_date_range(db, date_from: date, date_to: date, limit=500, vending_code=None):
     """
     Obtiene los documentos de la colección history entre date_from y date_to (inclusive).
     date_from, date_to: objetos date (solo día; se usa 00:00 y 23:59:59 UTC).
@@ -157,12 +185,11 @@ def get_history_by_date_range(db, date_from: date, date_to: date, limit=500):
     start_dt = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
     end_dt = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
     coll = db.collection(COLLECTION_HISTORY)
-    query = (
-        coll.where("fecha", ">=", start_dt)
-        .where("fecha", "<=", end_dt)
-        .order_by("fecha", direction=firestore.Query.DESCENDING)
-        .limit(limit)
-    )
+    query = coll.where("fecha", ">=", start_dt).where("fecha", "<=", end_dt)
+    vending_code = str(vending_code or os.getenv("vendingCode", "")).strip()
+    if vending_code:
+        query = query.where("vendingCode", "==", vending_code)
+    query = query.order_by("fecha", direction=firestore.Query.DESCENDING).limit(limit)
     out = []
     for doc in query.stream():
         data = doc.to_dict() or {}
