@@ -37,15 +37,14 @@ except Exception as _firestore_import_error:
 
 try:
     from email_notifier import (
-        notify_espiral_cero_stock,
-        notify_espirales_sin_stock,
         notify_vending_sin_stock,
         notify_stock_threshold,
+        notify_smtp_test,
     )
     _email_notifier_available = True
     _email_notifier_error = None
 except Exception as _email_notifier_err:
-    notify_espiral_cero_stock = notify_espirales_sin_stock = notify_vending_sin_stock = notify_stock_threshold = None
+    notify_vending_sin_stock = notify_stock_threshold = notify_smtp_test = None
     _email_notifier_available = False
     _email_notifier_error = _email_notifier_err
 
@@ -273,13 +272,11 @@ def dispensar_por_codigo(codigo):
         except Exception as ex:
             log.warning(f"No se sincronizó stock: {ex}")
 
-    # Notificaciones por correo: espirales en 0
-    if _email_notifier_available and notify_espirales_sin_stock and notify_vending_sin_stock:
+    # Notificación solo si ningún espiral tiene stock
+    if _email_notifier_available and notify_vending_sin_stock:
         espirales_en_0 = [e for e in ESPIRAL_ORDER if stock_actual.get(e, 0) <= 0]
         if len(espirales_en_0) == len(ESPIRAL_ORDER):
             notify_vending_sin_stock(VENDING_CODE)
-        elif espirales_en_0:
-            notify_espirales_sin_stock(espirales_en_0, VENDING_CODE)
 
     for i, espiral_id in enumerate(ESPIRAL_ORDER):
         cantidad = stock_actual.get(espiral_id, 0)
@@ -323,13 +320,7 @@ def ejecutar_prueba_espiral(idx):
         stock = get_config_stock(db, VENDING_CODE)
         cantidad = stock.get(espiral_id, 0)
         if cantidad <= 0:
-            if _email_notifier_available and notify_espiral_cero_stock:
-                log.info("Enviando notificación por email: %s sin stock", espiral_id)
-                ok = notify_espiral_cero_stock(espiral_id, VENDING_CODE)
-                if not ok:
-                    log.warning("No se pudo enviar el email (revisar SMTP y NOTIFICATION_EMAILS en .env)")
-            else:
-                log.warning("No se envía email: notificador no disponible o no configurado")
+            log.info("Prueba %s: sin stock", espiral_id)
             _mostrar_alert_firestore("Prueba", "Sin stock en este espiral")
             return
 
@@ -342,14 +333,7 @@ def ejecutar_prueba_espiral(idx):
             registrar_evento_history(db, "PRUEBA", 1, VENDING_CODE)
             STOCK[espiral_id] = nuevo_stock
 
-            # Si el espiral llegó a 0, se mantiene la alerta específica de espiral sin stock
-            if nuevo_stock <= 0 and _email_notifier_available and notify_espiral_cero_stock:
-                log.info("Espiral %s llegó a 0 stock; enviando notificación por email", espiral_id)
-                ok = notify_espiral_cero_stock(espiral_id, VENDING_CODE)
-                if not ok:
-                    log.warning("No se pudo enviar el email (revisar SMTP y NOTIFICATION_EMAILS en .env)")
-
-            # Además, verificar si el stock total alcanzó el umbral configurado
+            # Verificar si el stock total alcanzó el umbral configurado
             _check_stock_threshold_and_notify()
 
             _mostrar_alert_firestore("Prueba", "OK - impacto detectado")
@@ -727,12 +711,12 @@ def cerrar_para_config_wifi(e):
     page.update()
 
 def probar_email(e):
-    """Envía un email de prueba (alerta espiral sin stock) y muestra el resultado."""
-    if not _email_notifier_available or not notify_espiral_cero_stock:
+    """Envía un email de prueba SMTP (no es alerta de stock)."""
+    if not _email_notifier_available or not notify_smtp_test:
         _mostrar_alert_firestore("Probar email", "Notificador de email no disponible.\nRevisá que email_notifier esté instalado y que no haya fallado al importar.")
         return
-    log.info("Enviando email de prueba...")
-    ok = notify_espiral_cero_stock("espiral1", VENDING_CODE)
+    log.info("Enviando email de prueba SMTP...")
+    ok = notify_smtp_test(VENDING_CODE)
     if ok:
         _mostrar_alert_firestore("Probar email", "Email de prueba enviado correctamente.")
     else:
