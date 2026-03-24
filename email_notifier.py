@@ -167,6 +167,18 @@ def notify_vending_sin_stock(vending_code: str = None) -> bool:
     return _send_email("[Vending] Sin stock en ningún espiral", html)
 
 
+def notify_smtp_test(vending_code: str = None) -> bool:
+    """Correo de prueba para verificar SMTP; no indica alerta de stock."""
+    vending = vending_code or os.getenv("vendingCode", "")
+    subtitle = f"Vending: {vending}" if vending else "SMTP"
+    body = """
+      <p>Este es un <strong>correo de prueba</strong> para comprobar que SMTP y destinatarios están bien configurados.</p>
+      <p>No indica un problema de stock en la máquina.</p>
+    """
+    html = _template_base("Prueba SMTP", subtitle, body)
+    return _send_email("[Vending] Prueba SMTP", html)
+
+
 def notify_stock_threshold(total: int, threshold: int, vending_code: str = None) -> bool:
     """Notifica que el stock total alcanzó el umbral configurado (ej. quedan 15 unidades en total)."""
     vending = vending_code or os.getenv("vendingCode", "")
